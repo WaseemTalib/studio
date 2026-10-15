@@ -1,0 +1,311 @@
+"""HTTP API for Shortcut Studio."""
+
+import io
+import logging
+import os
+import re
+import shutil
+import tempfile
+import zipfile
+from pathlib import Path
+from typing import Annotated, Literal
+from urllib.parse import urlparse
+
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
+from fastapi.staticfiles import StaticFiles
+from pydantic import ValidationError
+
+from . import db, presets
+from .config import PROJECTS_DIR
+from .pipeline import media, render, runner
+from .pipeline.srt import SrtError, parse_srt
+from .schemas import SOURCE_SPECIFIC_OPTIONS, ClipRender, ClipUpdate, ProjectOptions, ProjectUpdate, SourceInfoRequest, TemplateIn
+
+logging.basicConfig(level=logging.INFO)
+
+app = FastAPI(title="Shortcut Studio API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+app.mount("/media", StaticFiles(directory=PROJECTS_DIR), name="media")
+
+ALLOWED_UPLOAD_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"}
+
+
+@app.on_event("startup")
+def _startup() -> None:
+    db.init()
+
+
+@app.get("/api/health")
+def health() -> dict:
+    return {"ok": True}
+
+
+@app.get("/api/presets")
+def get_presets() -> dict:
+    return presets.as_json()
+
+
+@app.get("/api/caption-preview.png")
+def caption_preview(
+    style: str = "karaoke",
+    color: str = "#facc15",
+    position: Literal["top", "middle", "bottom"] = "bottom",
+    aspect: Literal["9:16", "1:1", "16:9"] = "9:16",
+    title: bool = False,
+) -> Response:
+    if style != presets.NO_CAPTIONS and style not in presets.CAPTION_STYLES:
+        raise HTTPException(404, "Unknown caption style")
+    if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
+        raise HTTPException(422, "color must be #rrggbb")
+    img = render.preview(style, color, position, aspect, "Your clip title appears here" if title else None)
+    img.thumbnail((360, 640))
+    buf = io.BytesIO()
+    img.save(buf, "PNG", optimize=True)
+    return Response(buf.getvalue(), media_type="image/png", headers={"Cache-Control": "public, max-age=3600"})
+
+
+def _live(project: dict | None) -> dict | None:
+    """Add the running job's state: whether a cancel is in progress and the estimated seconds left."""
+    return None if project is None else {**project, **runner.live_status(project["id"])}
+
+
+@app.get("/api/projects")
+def list_projects() -> list[dict]:
+    return [_live(p) for p in db.list_projects()]
+
+
+@app.post("/api/source-info")
+def get_source_info(body: SourceInfoRequest) -> dict:
+    """Title and duration of a link, so the timeframe can be chosen before submitting."""
+    parsed = urlparse(body.url.strip())
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise HTTPException(422, "URL must be an http(s) link")
+    try:
+        return media.source_info(body.url.strip())
+    except (media.MediaError, ValueError) as e:
+        raise HTTPException(422, f"Could not read this link: {str(e).splitlines()[-1]}") from e
+
+
+@app.get("/api/templates")
+def list_templates() -> list[dict]:
+    return db.list_templates()
+
+
+@app.post("/api/templates", status_code=201)
+def save_template(body: TemplateIn) -> list[dict]:
+    options = body.options.model_dump(exclude=SOURCE_SPECIFIC_OPTIONS)
+    db.save_template(body.name.strip(), options, body.is_default)
+    return db.list_templates()
+
+
+@app.delete("/api/templates/{tid}", status_code=204)
+def delete_template(tid: str) -> None:
+    if not db.delete_template(tid):
+        raise HTTPException(404, "Template not found")
+
+
+@app.post("/api/projects", status_code=201)
+async def create_project(
+    options: Annotated[str, Form()] = "{}",
+    url: Annotated[str | None, Form()] = None,
+    file: Annotated[UploadFile | None, File()] = None,
+    title: Annotated[str | None, Form()] = None,
+    srt: Annotated[UploadFile | None, File()] = None,
+) -> dict:
+    try:
+        opts = ProjectOptions.model_validate_json(options)
+    except ValidationError as e:
+        raise HTTPException(422, e.errors(include_url=False, include_context=False)) from e
+
+    url = (url or "").strip() or None
+    if bool(url) == bool(file):
+        raise HTTPException(422, "Provide exactly one of: url, file")
+
+    imported = None
+    if srt is not None:
+        try:
+            imported = parse_srt((await srt.read()).decode("utf-8", errors="replace"), opts.language)
+        except SrtError as e:
+            raise HTTPException(422, str(e)) from e
+
+    pid = db.new_id()
+    work = runner.project_dir(pid)
+    work.mkdir(parents=True)
+
+    if url:
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.netloc:
+            shutil.rmtree(work)
+            raise HTTPException(422, "URL must be an http(s) link")
+        default_title, source_type, source = parsed.netloc + parsed.path, "url", url
+    else:
+        suffix = Path(file.filename or "").suffix.lower()
+        if suffix not in ALLOWED_UPLOAD_SUFFIXES:
+            shutil.rmtree(work)
+            raise HTTPException(422, f"Unsupported file type {suffix or '(none)'}")
+        with (work / f"source{suffix}").open("wb") as out:
+            shutil.copyfileobj(file.file, out, length=8 * 1024 * 1024)
+        default_title = re.sub(r"\.[^.]+$", "", file.filename or "Untitled")
+        source_type, source = "upload", file.filename or ""
+
+    if imported is not None:
+        (work / "transcript.json").write_text(imported.model_dump_json())
+    title = (title or "").strip() or default_title
+    db.create_project(pid, title[:120], source_type, source, opts.model_dump())
+    runner.submit(pid, url)
+    return _live(db.get_project(pid))
+
+
+@app.get("/api/projects/{pid}")
+def get_project(pid: str) -> dict:
+    project = db.get_project(pid)
+    if project is None:
+        raise HTTPException(404, "Project not found")
+    return _live(project)
+
+
+@app.patch("/api/projects/{pid}")
+def rename_project(pid: str, body: ProjectUpdate) -> dict:
+    if db.get_project(pid) is None:
+        raise HTTPException(404, "Project not found")
+    db.update_project(pid, title=body.title.strip())
+    return _live(db.get_project(pid))
+
+
+def _safe_name(text: str, fallback: str) -> str:
+    name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", text).strip().strip(".")
+    return re.sub(r"\s+", " ", name)[:80] or fallback
+
+
+@app.get("/api/projects/{pid}/download")
+def download_all(pid: str) -> FileResponse:
+    """Every ready clip as one zip, numbered by score, plus a text file of titles and hashtags."""
+    project = db.get_project(pid)
+    if project is None:
+        raise HTTPException(404, "Project not found")
+    clips = [c for c in db.list_clips(pid) if c["status"] != "rendering" and c["video"]]
+    if not clips:
+        raise HTTPException(404, "This project has no clips to download yet")
+
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
+    tmp.close()
+    notes = []
+    used: set[str] = set()
+    # MP4 is already compressed; storing avoids burning CPU for no size gain.
+    with zipfile.ZipFile(tmp.name, "w", compression=zipfile.ZIP_STORED) as zf:
+        for n, clip in enumerate(clips, 1):
+            path = PROJECTS_DIR / clip["video"].removeprefix("/media/")
+            if not path.exists():
+                continue
+            name = f"{n:02d} - {_safe_name(clip['title'], f'clip {n}')}.mp4"
+            while name in used:
+                name = name.replace(".mp4", " (2).mp4")
+            used.add(name)
+            zf.write(path, name)
+            tags = " ".join(f"#{h}" for h in clip["hashtags"])
+            notes.append(f"{name}\n{clip['title']}\n{tags}\nScore {clip['score']} · "
+                         f"{clip['start']:.1f}s–{clip['end']:.1f}s of the source\n")
+        zf.writestr("captions.txt", "\n".join(notes))
+    filename = f"{_safe_name(project['title'], 'clips')}.zip"
+    return FileResponse(tmp.name, media_type="application/zip", filename=filename,
+                        background=BackgroundTask(os.unlink, tmp.name))
+
+
+@app.post("/api/projects/{pid}/retry")
+def retry_project(pid: str) -> dict:
+    project = db.get_project(pid)
+    if project is None:
+        raise HTTPException(404, "Project not found")
+    if project["status"] not in ("failed", "cancelled"):
+        raise HTTPException(409, "Only failed or cancelled projects can be retried")
+    db.update_project(pid, status="queued", stage=None, progress=0, error=None)
+    runner.submit(pid, project["source"] if project["source_type"] == "url" else None)
+    return _live(db.get_project(pid))
+
+
+@app.post("/api/projects/{pid}/cancel")
+def cancel_project(pid: str) -> dict:
+    """Stop processing. The download and transcript are kept, so a retry resumes from there."""
+    project = db.get_project(pid)
+    if project is None:
+        raise HTTPException(404, "Project not found")
+    if project["status"] not in ("queued", "processing"):
+        raise HTTPException(409, "Only queued or processing projects can be cancelled")
+    if not runner.cancel_project(pid):  # no job on this server for it: nothing left to stop
+        db.mark_cancelled(pid)
+    return _live(db.get_project(pid))
+
+
+@app.delete("/api/projects/{pid}", status_code=204)
+def delete_project(pid: str) -> None:
+    project = db.get_project(pid)
+    if project is None:
+        raise HTTPException(404, "Project not found")
+    if project["status"] in ("queued", "processing"):
+        raise HTTPException(409, "Project is still processing")
+    db.delete_project(pid)
+    shutil.rmtree(runner.project_dir(pid), ignore_errors=True)
+
+
+@app.get("/api/projects/{pid}/clips")
+def list_clips(pid: str) -> list[dict]:
+    if db.get_project(pid) is None:
+        raise HTTPException(404, "Project not found")
+    return db.list_clips(pid)
+
+
+@app.get("/api/projects/{pid}/transcript")
+def get_transcript(pid: str) -> dict:
+    transcript = runner.load_transcript(pid)
+    if transcript is None:
+        raise HTTPException(404, "Transcript not available yet")
+    return transcript.model_dump()
+
+
+EDITOR_CONTEXT_SECONDS = 90
+
+
+@app.get("/api/clips/{cid}")
+def get_clip(cid: str) -> dict:
+    """Clip plus the transcript words around it, for trimming and caption editing."""
+    clip = db.get_clip(cid)
+    if clip is None:
+        raise HTTPException(404, "Clip not found")
+    project = db.get_project(clip["project_id"])
+    transcript = runner.load_transcript(clip["project_id"])
+    lo, hi = clip["start"] - EDITOR_CONTEXT_SECONDS, clip["end"] + EDITOR_CONTEXT_SECONDS
+    context = [w.model_dump() for w in runner.transcript_words(transcript) if lo <= w.start <= hi] if transcript else []
+    source = runner.find_source(clip["project_id"])
+    return {**clip, "project": project, "context_words": context,
+            "source_video": runner.media_url(source) if source else None}
+
+
+@app.post("/api/clips/{cid}/render", status_code=202)
+def rerender_clip(cid: str, body: ClipRender) -> dict:
+    clip = db.get_clip(cid)
+    if clip is None:
+        raise HTTPException(404, "Clip not found")
+    if clip["status"] == "rendering":
+        raise HTTPException(409, "Clip is already rendering")
+    project = db.get_project(clip["project_id"])
+    if project["duration"] is not None and body.start >= project["duration"]:
+        raise HTTPException(422, "Clip starts after the end of the video")
+    db.update_clip(cid, status="rendering", error=None)
+    runner.submit_rerender(cid, body)
+    return db.get_clip(cid)
+
+
+@app.patch("/api/clips/{cid}")
+def update_clip(cid: str, body: ClipUpdate) -> dict:
+    clip = db.update_clip(cid, **body.model_dump(exclude_none=True))
+    if clip is None:
+        raise HTTPException(404, "Clip not found")
+    return clip

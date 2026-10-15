@@ -1,0 +1,11 @@
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+python-multipart==0.0.20
+pydantic==2.11.4
+anthropic>=0.70
+faster-whisper==1.1.1
+pillow==11.2.1
+opencv-python-headless==4.14.0.94
+yt-dlp[default]>=2026.8.19
+requests>=2.31
+groq>=1.7
