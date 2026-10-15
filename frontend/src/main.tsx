@@ -5,6 +5,7 @@ import './index.css'
 import ClipEditor from './pages/ClipEditor'
 import Dashboard from './pages/Dashboard'
 import ProjectPage from './pages/ProjectPage'
+import VoiceStudio from './pages/VoiceStudio'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -16,6 +17,7 @@ createRoot(document.getElementById('root')!).render(
           </Link>
           <nav className="nav">
             <NavLink to="/" end>Projects</NavLink>
+            <NavLink to="/voice-studio">Voice Studio</NavLink>
           </nav>
           <a href="/#new" className="button primary small-btn">+ New project</a>
         </div>
@@ -25,6 +27,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/" element={<Dashboard />} />
           <Route path="/projects/:id" element={<ProjectPage />} />
           <Route path="/clips/:id" element={<ClipEditor />} />
+          <Route path="/voice-studio" element={<VoiceStudio />} />
         </Routes>
       </main>
     </BrowserRouter>

@@ -18,11 +18,12 @@ from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
-from . import db, presets
-from .config import PROJECTS_DIR
+from . import db, presets, tts
+from .config import PROJECTS_DIR, VOICE_DIR
 from .pipeline import media, render, runner
 from .pipeline.srt import SrtError, parse_srt
-from .schemas import SOURCE_SPECIFIC_OPTIONS, ClipRender, ClipUpdate, ProjectOptions, ProjectUpdate, SourceInfoRequest, TemplateIn
+from .schemas import (SOURCE_SPECIFIC_OPTIONS, AddLibraryVoice, ClipRender, ClipUpdate, ProjectOptions, ProjectUpdate,
+                      SourceInfoRequest, SpeechRequest, TemplateIn)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -34,6 +35,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.mount("/media", StaticFiles(directory=PROJECTS_DIR), name="media")
+app.mount("/voice-media", StaticFiles(directory=VOICE_DIR), name="voice-media")
 
 ALLOWED_UPLOAD_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"}
 
@@ -309,3 +311,82 @@ def update_clip(cid: str, body: ClipUpdate) -> dict:
     if clip is None:
         raise HTTPException(404, "Clip not found")
     return clip
+
+
+# --- Voice Studio -----------------------------------------------------------------
+
+
+def _tts(call, *args):
+    try:
+        return call(*args)
+    except tts.TTSError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+@app.get("/api/tts/providers")
+def tts_providers() -> list[dict]:
+    return tts.providers()
+
+
+@app.get("/api/tts/models")
+def tts_models(provider: Literal["elevenlabs", "local"]) -> list[dict]:
+    return _tts(tts.models, provider)
+
+
+@app.get("/api/tts/voices")
+def tts_voices(
+    provider: Literal["elevenlabs", "local"],
+    source: Literal["default", "mine", "library"] = "default",
+    search: str | None = None,
+    gender: str | None = None,
+    age: str | None = None,
+    accent: str | None = None,
+    language: str | None = None,
+    use_case: str | None = None,
+    category: Literal["professional", "famous", "high_quality"] | None = None,
+    sort: Literal["cloned_by_count", "trending", "usage_character_count_1y", "created_date"] | None = None,
+    page: str | None = None,
+) -> dict:
+    filters = {"search": search, "gender": gender, "age": age, "accent": accent, "language": language,
+               "use_case": use_case, "category": category, "sort": sort}
+    return _tts(tts.voices, provider, source, filters, page)
+
+
+@app.get("/api/tts/voices/local/{voice_id}/preview")
+def tts_local_preview(voice_id: str) -> FileResponse:
+    if voice_id not in tts.local.VOICES:
+        raise HTTPException(404, "Unknown voice")
+    return FileResponse(_tts(tts.local_sample, voice_id), media_type="audio/mpeg")
+
+
+@app.post("/api/tts/voices/library")
+def tts_add_library_voice(body: AddLibraryVoice) -> dict:
+    """Add a community library voice to the user's ElevenLabs account so it can speak."""
+    return {"voice_id": _tts(tts.elevenlabs.add_shared_voice, body.public_owner_id, body.voice_id, body.name)}
+
+
+@app.get("/api/tts/usage")
+def tts_usage() -> dict | None:
+    return _tts(tts.elevenlabs.usage) if tts.elevenlabs.available() else None
+
+
+@app.post("/api/tts/local/download")
+def tts_local_download() -> dict:
+    return tts.local.start_download()
+
+
+@app.post("/api/tts/generate", status_code=201)
+def tts_generate(body: SpeechRequest) -> dict:
+    return _tts(tts.generate, body.provider, body.voice_id, body.voice_name, body.model_id, body.text,
+                body.settings.model_dump())
+
+
+@app.get("/api/tts/history")
+def tts_history() -> list[dict]:
+    return tts.history()
+
+
+@app.delete("/api/tts/history/{gid}", status_code=204)
+def tts_delete(gid: str) -> None:
+    if not tts.delete(gid):
+        raise HTTPException(404, "Generation not found")

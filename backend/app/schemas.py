@@ -180,3 +180,37 @@ class ClipRender(BaseModel):
         if self.end - self.start > 4 * 3600:
             raise ValueError("clip must be at most 4 hours long")
         return self
+
+
+# --- Voice Studio -----------------------------------------------------------------
+
+
+class VoiceSettings(BaseModel):
+    """ElevenLabs' voice controls; the local model uses only speed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    speed: float = Field(default=1.0, ge=0.7, le=1.2)
+    stability: float = Field(default=0.5, ge=0.0, le=1.0)
+    similarity: float = Field(default=0.75, ge=0.0, le=1.0)
+    style: float = Field(default=0.0, ge=0.0, le=1.0)
+    speaker_boost: bool = True
+
+
+class SpeechRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Literal["elevenlabs", "local"]
+    voice_id: str = Field(min_length=1, max_length=100)
+    voice_name: str = Field(min_length=1, max_length=200)
+    model_id: str = Field(min_length=1, max_length=100)
+    text: str = Field(min_length=1, max_length=50000)
+    settings: VoiceSettings = VoiceSettings()
+
+
+class AddLibraryVoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    public_owner_id: str = Field(min_length=1, max_length=200)
+    voice_id: str = Field(min_length=1, max_length=100)
+    name: str = Field(min_length=1, max_length=200)

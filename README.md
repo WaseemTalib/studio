@@ -34,6 +34,20 @@ Without it, transcription runs locally with faster-whisper (first run downloads 
 
 Groq's free tier has per-minute and per-day token limits for each model. Long transcripts are split to fit the per-minute limit. When the daily limit of the highlight model runs out, the other Groq model (`SHORTCUT_GROQ_FAST_MODEL` or `SHORTCUT_GROQ_LLM_MODEL`) is used instead.
 
+## Voice Studio
+
+**Voice Studio** (top navigation, `/voice-studio`) turns text into speech, laid out like ElevenLabs' text-to-speech
+page: a text editor, voice and model settings, a history of everything you generated, and a player.
+
+- **ElevenLabs**: set `ELEVENLABS_API_KEY`. You get ElevenLabs' models, their default voices, your own voices and
+  the community voice library (filters for language, accent, gender, age, use case, and the licensed "Iconic"
+  voices). Using a library voice first adds it to your ElevenLabs account; that happens only when you click
+  **Add & use**. Generations count against your ElevenLabs plan.
+- **Local (Kokoro)**: free and offline. 49 voices in English (US/UK), Spanish, French, Hindi, Italian, Portuguese
+  and Chinese. The model (about 350 MB) is downloaded on first use into `backend/data/models/kokoro`.
+
+Generated audio is saved in `backend/data/voice/`.
+
 ## Configuration (environment)
 
 | Variable | Default | Purpose |
@@ -45,6 +59,8 @@ Groq's free tier has per-minute and per-day token limits for each model. Long tr
 | `SHORTCUT_CLAUDE_MODEL` | `claude-opus-5-5` | Claude model |
 | `SHORTCUT_TRANSCRIBER` | `groq` if `GROQ_API_KEY` is set, else `local` | Speech-to-text |
 | `SHORTCUT_GROQ_WHISPER_MODEL` | `whisper-large-v3-turbo` | Groq Whisper model |
+| `ELEVENLABS_API_KEY` | unset | Enables ElevenLabs in Voice Studio |
+| `SHORTCUT_KOKORO_MODEL` | `kokoro-v1.0.onnx` | Local voice model file (`kokoro-v1.0.int8.onnx` is smaller but slower on Apple Silicon) |
 | `SHORTCUT_WHISPER_MODEL` | `small` | Local model: `tiny`, `base`, `small`, `medium`, `large-v3` |
 | `SHORTCUT_WHISPER_DEVICE` | `auto` | `cpu`, `cuda`, or `auto` |
 | `SHORTCUT_WHISPER_COMPUTE` | `int8` | faster-whisper compute type |

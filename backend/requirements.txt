@@ -9,3 +9,4 @@ opencv-python-headless==4.14.0.94
 yt-dlp[default]>=2026.8.19
 requests>=2.31
 groq>=1.7
+kokoro-onnx==0.6.1

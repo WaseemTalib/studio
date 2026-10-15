@@ -53,6 +53,21 @@ CREATE TABLE IF NOT EXISTS clips (
 );
 """
 
+TTS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS tts_generations (
+    id TEXT PRIMARY KEY,
+    provider TEXT NOT NULL,             -- elevenlabs | local
+    voice_id TEXT NOT NULL,
+    voice_name TEXT NOT NULL,
+    model_id TEXT NOT NULL,
+    text TEXT NOT NULL,
+    settings TEXT NOT NULL,             -- JSON voice settings used
+    audio TEXT NOT NULL,                -- URL under /voice-media
+    duration REAL,
+    created_at REAL NOT NULL
+);
+"""
+
 TEMPLATES_SCHEMA = """
 CREATE TABLE IF NOT EXISTS templates (
     id TEXT PRIMARY KEY,
@@ -93,6 +108,7 @@ def init() -> None:
     with connect() as conn:
         conn.executescript(SCHEMA)
         conn.executescript(TEMPLATES_SCHEMA)
+        conn.executescript(TTS_SCHEMA)
         clip_columns = {r["name"] for r in conn.execute("PRAGMA table_info(clips)")}
         for name, decl in CLIP_MIGRATIONS.items():
             if name not in clip_columns:
@@ -241,3 +257,30 @@ def save_template(name: str, options: dict, is_default: bool) -> str:
 def delete_template(tid: str) -> bool:
     with connect() as conn:
         return conn.execute("DELETE FROM templates WHERE id = ?", (tid,)).rowcount > 0
+
+
+def add_generation(g: dict[str, Any]) -> None:
+    with connect() as conn:
+        conn.execute(
+            "INSERT INTO tts_generations (id, provider, voice_id, voice_name, model_id, text, settings, audio, "
+            "duration, created_at) VALUES (:id, :provider, :voice_id, :voice_name, :model_id, :text, :settings, "
+            ":audio, :duration, :created_at)",
+            {**g, "settings": json.dumps(g["settings"])},
+        )
+
+
+def list_generations(limit: int = 200) -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute("SELECT * FROM tts_generations ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        return [{**dict(r), "settings": json.loads(r["settings"])} for r in rows]
+
+
+def get_generation(gid: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM tts_generations WHERE id = ?", (gid,)).fetchone()
+        return {**dict(row), "settings": json.loads(row["settings"])} if row else None
+
+
+def delete_generation(gid: str) -> bool:
+    with connect() as conn:
+        return conn.execute("DELETE FROM tts_generations WHERE id = ?", (gid,)).rowcount > 0

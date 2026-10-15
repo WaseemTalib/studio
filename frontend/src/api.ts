@@ -152,7 +152,7 @@ export interface ClipRender {
   words: Word[] | null
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init)
   if (!res.ok) {
     let detail = res.statusText

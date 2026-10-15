@@ -10,6 +10,7 @@ export default defineConfig(({ mode }) => {
       proxy: {
         '/api': api,
         '/media': api,
+        '/voice-media': api,
       },
     },
   }
