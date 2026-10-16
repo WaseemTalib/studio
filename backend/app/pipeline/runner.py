@@ -13,7 +13,7 @@ from pathlib import Path
 from .. import db
 from ..config import PROJECTS_DIR
 from ..schemas import ClipRender, LookOptions, ProjectOptions, Transcript, Word
-from . import cancel, media
+from . import cancel, limits, media
 from .highlights import clip_transcript, pick_highlights, whole_video
 from .render import render_clip
 from .transcribe import transcribe
@@ -37,6 +37,89 @@ REUSED_STAGE_SECONDS = 3.0
 MIN_ESTIMATE_SECONDS = 5.0
 
 
+class _Decider:
+    """What the user decided about usage limits during one job (see limits.handle)."""
+
+    def __init__(self, job: cancel.Job):
+        self.job = job
+        self.overrides: dict[str, str] = {}
+        self.patient: set[tuple] = set()
+        self.paused = 0.0                  # seconds spent waiting on limits, left out of time estimates
+        self._lock = threading.Condition()
+        self._state: dict | None = None    # what the project page shows
+        self._choice: limits.Choice | None = None
+
+    def ask(self, stage: str, limit: limits.Limit, options: list[limits.Option]) -> limits.Choice:
+        log.info("%s: %s; asking the user", stage, limit.message)
+        choice = self._await("ask", stage, limit, options, None)
+        assert choice is not None
+        return choice
+
+    def wait(self, stage: str, limit: limits.Limit, options: list[limits.Option]) -> limits.Choice | None:
+        """Wait for the limit to free up; the user may still switch meanwhile."""
+        left = max(0.0, limit.retry_after - (time.time() - limit.seen_at)) + 1.0
+        return self._await("wait", stage, limit, options, time.time() + left)
+
+    def notice(self, limit: limits.Limit) -> None:
+        with self._lock:
+            self._state = {"mode": "auto_wait", "stage": None, "limit": limit, "options": [],
+                           "until": time.time() + limit.retry_after + 0.5, "since": time.time()}
+
+    def clear(self) -> None:
+        with self._lock:
+            if self._state:
+                self.paused += time.time() - self._state["since"]
+            self._state = None
+
+    def _await(self, mode: str, stage: str, limit: limits.Limit, options: list[limits.Option],
+               until: float | None) -> limits.Choice | None:
+        with self._lock:
+            self._state = {"mode": mode, "stage": stage, "limit": limit, "options": options, "until": until,
+                           "since": time.time()}
+            self._choice = None
+        try:
+            with self._lock:
+                while self._choice is None:
+                    if self.job.cancelled:
+                        raise cancel.Cancelled()
+                    if until is not None and time.time() >= until:
+                        return None
+                    self._lock.wait(0.5)
+                return self._choice
+        finally:
+            self.clear()
+
+    def choose(self, action: str, option: str | None) -> None:
+        """From the API: the user's answer to the open question or ongoing wait."""
+        with self._lock:
+            state = self._state
+            if state is None or state["mode"] not in ("ask", "wait"):
+                raise ValueError("There is no usage-limit question open for this project")
+            if action == "switch":
+                allowed = {o.id for o in state["options"] if o.available}
+                if option not in allowed:
+                    raise ValueError("That option is not available")
+            elif action != "wait":
+                raise ValueError("Unknown action")
+            self._choice = limits.Choice(action, option if action == "switch" else None)
+            self._lock.notify_all()
+
+    def public(self) -> dict | None:
+        with self._lock:
+            state = self._state
+            if state is None:
+                return None
+            return {
+                "mode": state["mode"], "stage": state["stage"], "limit": state["limit"].public(),
+                "options": [o.public() for o in state["options"]],
+                "seconds_left": None if state["until"] is None else max(0.0, state["until"] - time.time()),
+            }
+
+    def paused_now(self) -> float:
+        with self._lock:
+            return self.paused + (time.time() - self._state["since"] if self._state else 0.0)
+
+
 @dataclass
 class _Active:
     """A submitted project job, with the timing that the time-left estimate is based on.
@@ -46,6 +129,7 @@ class _Active:
     import is estimated; afterwards, later stages are estimated from the pace since the import."""
 
     job: cancel.Job = field(default_factory=cancel.Job)
+    decider: _Decider = field(init=False)
     started_at: float = 0.0
     stage: str | None = None
     stage_started_at: float = 0.0
@@ -53,6 +137,13 @@ class _Active:
     work_started_at: float | None = None  # when the first stage after importing began
     work_start_progress: float = 0.0
     reused: float = 0.0  # progress after importing that came from reused work rather than this run
+
+    def __post_init__(self) -> None:
+        self.decider = _Decider(self.job)
+
+    def clock(self) -> float:
+        """Time that stops while the job waits on a usage limit, so waits don't skew estimates."""
+        return time.time() - self.decider.paused_now()
 
     def enter(self, stage: str, progress: float, now: float) -> None:
         if self.stage != stage:
@@ -121,15 +212,27 @@ def cancel_project(pid: str) -> bool:
 
 
 def live_status(pid: str) -> dict:
-    """In-memory job state the database does not hold: cancellation in progress and time left."""
+    """In-memory job state the database does not hold: cancellation in progress, time left, and
+    a usage limit the job is waiting on or asking about."""
     with _active_lock:
         active = _active.get(pid)
     if active is None:
-        return {"cancelling": False, "eta_seconds": None, "eta_scope": None}
-    estimate = None if active.job.cancelled else active.estimate(time.time())
+        return {"cancelling": False, "eta_seconds": None, "eta_scope": None, "limit": None}
+    limit = active.decider.public()
+    estimate = None if active.job.cancelled or limit else active.estimate(active.clock())
     return {"cancelling": active.job.cancelled,
             "eta_seconds": None if estimate is None else round(estimate[0]),
-            "eta_scope": None if estimate is None else estimate[1]}
+            "eta_scope": None if estimate is None else estimate[1],
+            "limit": limit}
+
+
+def choose_on_limit(pid: str, action: str, option: str | None) -> None:
+    """The user's answer when a project waits on a usage limit: "wait" or "switch" to `option`."""
+    with _active_lock:
+        active = _active.get(pid)
+    if active is None:
+        raise ValueError("This project is not running")
+    active.decider.choose(action, option)
 
 
 def _stage(pid: str, stage: str, fraction: float = 0.0) -> None:
@@ -139,7 +242,7 @@ def _stage(pid: str, stage: str, fraction: float = 0.0) -> None:
     with _active_lock:
         active = _active.get(pid)
     if active is not None:
-        active.enter(stage, progress, time.time())
+        active.enter(stage, progress, active.clock())
     db.update_project(pid, status="processing", stage=stage, progress=progress)
 
 
@@ -148,7 +251,7 @@ def _run(pid: str, source_url: str | None, active: _Active) -> None:
         if not active.job.start():
             return
         active.started_at = time.time()
-        with cancel.bound(active.job):
+        with cancel.bound(active.job), limits.bound(active.decider):
             _process(pid, source_url)
     except Exception as e:  # surface every failure on the project instead of losing it in a thread
         if active.job.cancelled:  # includes errors from requests and processes cut off by the cancel

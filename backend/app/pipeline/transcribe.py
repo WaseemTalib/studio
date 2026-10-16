@@ -1,6 +1,8 @@
 """Speech-to-text with word timestamps: Groq hosted Whisper or local faster-whisper."""
 
+import os
 import tempfile
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Callable
@@ -8,6 +10,7 @@ from typing import Any, Callable
 from ..config import (FFMPEG, GROQ_WHISPER_MODEL, TRANSCRIBER, WHISPER_COMPUTE, WHISPER_DEVICE,
                       WHISPER_MODEL)
 from ..schemas import Segment, Transcript, Word
+from . import cancel, limits
 from .media import run
 
 # Groq's free tier caps uploads at 25 MB. 10 minutes of 16 kHz mono AAC at 32 kbps is ~2.4 MB,
@@ -20,11 +23,53 @@ class TranscriptionError(RuntimeError):
 
 
 def transcribe(audio: Path, duration: float, language: str | None, on_progress: Callable[[float], None]) -> Transcript:
-    if TRANSCRIBER == "groq":
-        return _transcribe_groq(audio, duration, language, on_progress)
-    if TRANSCRIBER == "local":
-        return _transcribe_local(audio, duration, language, on_progress)
-    raise TranscriptionError(f"Unknown SHORTCUT_TRANSCRIBER {TRANSCRIBER!r} (use 'groq' or 'local')")
+    """Transcribe with the configured engine. When it hits a usage limit, limits.handle() waits
+    or asks the user; after a switch, the rest of the audio is done by the chosen engine and
+    what is already transcribed is kept."""
+    engine = limits.override("transcribe") or _default_engine()
+    done = _Done(language)
+    while done.offset < duration:
+        service, _, model = engine.partition(":")
+        try:
+            if service == "groq":
+                _transcribe_groq(audio, duration, model, done, on_progress)
+            elif service == "local":
+                _transcribe_local(audio, duration, done, on_progress)
+            else:
+                raise TranscriptionError(f"Unknown SHORTCUT_TRANSCRIBER {TRANSCRIBER!r} (use 'groq' or 'local')")
+        except limits.LimitReached as e:
+            try:
+                engine = limits.handle("transcribe", e.limit, transcription_options(engine)) or engine
+            except limits.LimitReached as again:  # no project to ask
+                raise TranscriptionError(str(again)) from again
+    return Transcript(language=done.language or "unknown", duration=duration, segments=done.segments)
+
+
+@dataclass
+class _Done:
+    """Transcription so far: everything before `offset` seconds is in `segments`."""
+
+    language: str | None
+    offset: float = 0.0
+    segments: list[Segment] = field(default_factory=list)
+
+
+def _default_engine() -> str:
+    return f"groq:{GROQ_WHISPER_MODEL}" if TRANSCRIBER == "groq" else f"local:{WHISPER_MODEL}"
+
+
+def transcription_options(current: str) -> list[limits.Option]:
+    groq_key = bool(os.environ.get("GROQ_API_KEY"))
+    reason = None if groq_key else "Add GROQ_API_KEY to backend/.env"
+    options = [
+        limits.Option("groq:whisper-large-v3-turbo", "Groq whisper-large-v3-turbo",
+                      "Fast hosted Whisper. Each Groq model has its own limits.", groq_key, reason),
+        limits.Option("groq:whisper-large-v3", "Groq whisper-large-v3",
+                      "Slightly more accurate hosted Whisper. Each Groq model has its own limits.", groq_key, reason),
+        limits.Option(f"local:{WHISPER_MODEL}", f"Whisper {WHISPER_MODEL} on this computer",
+                      "Free, no limits; slower. The first use downloads the model.", True),
+    ]
+    return [o for o in options if o.id != current]
 
 
 # --- Groq -----------------------------------------------------------------------
@@ -34,45 +79,45 @@ def _field(obj: Any, name: str, default: Any = None) -> Any:
     return obj.get(name, default) if isinstance(obj, dict) else getattr(obj, name, default)
 
 
-def _transcribe_groq(audio: Path, duration: float, language: str | None,
-                     on_progress: Callable[[float], None]) -> Transcript:
+def _transcribe_groq(audio: Path, duration: float, model: str, done: _Done,
+                     on_progress: Callable[[float], None]) -> None:
     import groq
 
-    client = groq.Groq()
-    segments: list[Segment] = []
-    detected = language
+    client = groq.Groq(max_retries=0)  # rate limits are handled by limits.handle()
     with tempfile.TemporaryDirectory() as tmp:
-        offset = 0.0
-        while offset < duration:
+        while done.offset < duration:
+            offset = done.offset
             length = min(GROQ_CHUNK_SECONDS, duration - offset)
             chunk = Path(tmp) / f"chunk_{int(offset)}.m4a"
             run([FFMPEG, "-y", "-v", "error", "-ss", f"{offset:.3f}", "-t", f"{length:.3f}", "-i", str(audio),
                  "-ac", "1", "-ar", "16000", "-c:a", "aac", "-b:a", "32k", str(chunk)])
             try:
                 with chunk.open("rb") as f:
-                    result = client.audio.transcriptions.create(
+                    raw = client.audio.transcriptions.with_raw_response.create(
                         file=(chunk.name, f.read()),
-                        model=GROQ_WHISPER_MODEL,
+                        model=model,
                         response_format="verbose_json",
                         timestamp_granularities=["word", "segment"],
-                        language=language,
+                        language=done.language,
                         temperature=0.0,
                     )
             except groq.AuthenticationError as e:
                 raise TranscriptionError("Groq API key is missing or invalid (set GROQ_API_KEY)") from e
             except groq.RateLimitError as e:
-                raise TranscriptionError("Groq transcription rate limit reached; retry later") from e
+                body = e.body.get("error", e.body) if isinstance(e.body, dict) else None
+                message = body.get("message", str(e)) if isinstance(body, dict) else str(e)
+                raise limits.LimitReached(limits.from_groq("groq", model, message, e.response.headers)) from e
             except groq.APIStatusError as e:
                 raise TranscriptionError(f"Groq transcription error {e.status_code}: {e.message}") from e
             except groq.APIConnectionError as e:
                 raise TranscriptionError("Could not reach the Groq API") from e
+            limits.record("groq", model, raw.headers)
+            result = raw.parse()
 
-            detected = detected or _field(result, "language")
-            segments.extend(_groq_segments(result, offset))
-            offset += length
-            on_progress(min(offset / duration, 1.0))
-
-    return Transcript(language=detected or "unknown", duration=duration, segments=segments)
+            done.language = done.language or _field(result, "language")
+            done.segments.extend(_groq_segments(result, offset))
+            done.offset = offset + length
+            on_progress(min(done.offset / duration, 1.0))
 
 
 def _groq_segments(result: Any, offset: float) -> list[Segment]:
@@ -106,19 +151,27 @@ def _model():
     return WhisperModel(WHISPER_MODEL, device=WHISPER_DEVICE, compute_type=WHISPER_COMPUTE)
 
 
-def _transcribe_local(audio: Path, duration: float, language: str | None,
-                      on_progress: Callable[[float], None]) -> Transcript:
-    segments_iter, info = _model().transcribe(
-        str(audio), language=language, word_timestamps=True, vad_filter=True
-    )
-    segments: list[Segment] = []
-    for seg in segments_iter:
-        words = [
-            Word(start=w.start, end=w.end, text=w.word.strip())
-            for w in (seg.words or [])
-            if w.word.strip()
-        ]
-        segments.append(Segment(start=seg.start, end=seg.end, text=seg.text.strip(), words=words))
-        if duration > 0:
-            on_progress(min(seg.end / duration, 1.0))
-    return Transcript(language=info.language, duration=duration, segments=segments)
+def _transcribe_local(audio: Path, duration: float, done: _Done, on_progress: Callable[[float], None]) -> None:
+    """faster-whisper on this computer, from done.offset to the end."""
+    with tempfile.TemporaryDirectory() as tmp:
+        source, offset = audio, done.offset
+        if offset > 0:  # continue where another engine stopped
+            source = Path(tmp) / "rest.wav"
+            run([FFMPEG, "-y", "-v", "error", "-ss", f"{offset:.3f}", "-i", str(audio), "-ac", "1", "-ar", "16000",
+                 str(source)])
+        segments_iter, info = _model().transcribe(
+            str(source), language=done.language, word_timestamps=True, vad_filter=True
+        )
+        for seg in segments_iter:
+            cancel.check()
+            words = [
+                Word(start=w.start + offset, end=w.end + offset, text=w.word.strip())
+                for w in (seg.words or [])
+                if w.word.strip()
+            ]
+            done.segments.append(Segment(start=seg.start + offset, end=seg.end + offset, text=seg.text.strip(),
+                                         words=words))
+            if duration > 0:
+                on_progress(min((seg.end + offset) / duration, 1.0))
+    done.language = done.language or info.language
+    done.offset = duration

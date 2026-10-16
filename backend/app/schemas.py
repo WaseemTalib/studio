@@ -182,6 +182,15 @@ class ClipRender(BaseModel):
         return self
 
 
+class LimitChoice(BaseModel):
+    """What to do when a project waits on a usage limit."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    action: Literal["wait", "switch"]
+    option: str | None = Field(default=None, max_length=200)  # with "switch": the service to use, "service:model"
+
+
 # --- Voice Studio -----------------------------------------------------------------
 
 

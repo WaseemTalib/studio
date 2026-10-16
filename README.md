@@ -3,7 +3,7 @@
 Turn long videos into short, captioned clips.
 
 Pipeline: **import** (upload or link via yt-dlp) → **transcribe** (faster-whisper, word timestamps) →
-**pick highlights** (Claude, structured output) → **render** (ffmpeg cut + reframe to 9:16 / 1:1 / 16:9,
+**pick highlights** (Groq or another free LLM platform, structured output) → **render** (ffmpeg cut + reframe to 9:16 / 1:1 / 16:9,
 burned-in captions) → clip library with virality score, hook, reasoning, hashtags, and download.
 
 ## Requirements
@@ -11,7 +11,7 @@ burned-in captions) → clip library with virality score, hook, reasoning, hasht
 - Python 3.10+
 - Node 20+
 - `ffmpeg`, `ffprobe` and `yt-dlp` on `PATH`
-- A Groq API key (`GROQ_API_KEY`, from console.groq.com) **or** an Anthropic API key (`ANTHROPIC_API_KEY`)
+- A free Groq API key (`GROQ_API_KEY`, from console.groq.com)
 
 ## Run
 
@@ -19,7 +19,7 @@ burned-in captions) → clip library with virality score, hook, reasoning, hasht
 # Backend (http://127.0.0.1:8000)
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env                 # then add GROQ_API_KEY (or ANTHROPIC_API_KEY) to .env
+cp .env.example .env                 # then add GROQ_API_KEY to .env
 .venv/bin/uvicorn app.main:app --reload
 
 # Frontend (http://localhost:5173), in another terminal
@@ -30,9 +30,32 @@ npm run dev
 
 With `GROQ_API_KEY` set, both transcription (hosted Whisper) and highlight picking run on Groq.
 Without it, transcription runs locally with faster-whisper (first run downloads the `small` model,
-~500 MB) and highlights use Claude.
+~500 MB); highlight picking needs Groq or one of the other free platforms below.
 
 Groq's free tier has per-minute and per-day token limits for each model. Long transcripts are split to fit the per-minute limit. When the daily limit of the highlight model runs out, the other Groq model (`SHORTCUT_GROQ_FAST_MODEL` or `SHORTCUT_GROQ_LLM_MODEL`) is used instead.
+
+## Usage limits
+
+Hosted services have usage limits (Groq's free tier: tokens per minute and per day for highlights,
+audio seconds per hour and per day for transcription). When one is reached:
+
+- **Per-minute limits** are waited out automatically; the progress bar shows the countdown and the
+  tokens left.
+- **Longer limits** pause the project and open a dialog with the exact numbers (allowance, used,
+  remaining, what the request needs, and when it frees up). You choose: **wait** (it continues by itself
+  when the limit frees up), **switch** to another option, or cancel. Nothing switches on its own, and
+  finished work is kept: after switching, transcription continues where it stopped.
+
+Options you can switch to, once set up in `backend/.env`:
+
+| For | Option | Setup |
+|---|---|---|
+| Transcription | Groq's other Whisper model | `GROQ_API_KEY` (each model has its own limits) |
+| Transcription | Whisper on this computer | none; free, slower, downloads the model on first use |
+| Highlights | Groq's other model | `GROQ_API_KEY` |
+| Highlights | Google Gemini Flash | free `GEMINI_API_KEY` from aistudio.google.com |
+| Highlights | OpenRouter `gpt-oss-120b:free` | free `OPENROUTER_API_KEY` from openrouter.ai |
+| Highlights | SambaNova `gpt-oss-120b` | free `SAMBANOVA_API_KEY` from cloud.sambanova.ai |
 
 ## Voice Studio
 
@@ -56,10 +79,9 @@ export them in your shell, which takes precedence. Restart the backend after cha
 | Variable | Default | Purpose |
 |---|---|---|
 | `SHORTCUT_DATA_DIR` | `backend/data` | SQLite DB and project media |
-| `SHORTCUT_LLM_PROVIDER` | `groq` if `GROQ_API_KEY` is set, else `anthropic` | Highlight picker |
+| `SHORTCUT_LLM_PROVIDER` | `groq` | Highlight picker: `groq`, `gemini`, `openrouter` or `sambanova` |
 | `SHORTCUT_GROQ_LLM_MODEL` | `openai/gpt-oss-120b` | Groq model (must support strict JSON schema) |
 | `SHORTCUT_GROQ_TPM` | `8000` | Your Groq tier's tokens-per-minute limit; long transcripts are split to fit (`0` = never split) |
-| `SHORTCUT_CLAUDE_MODEL` | `claude-opus-5-5` | Claude model |
 | `SHORTCUT_TRANSCRIBER` | `groq` if `GROQ_API_KEY` is set, else `local` | Speech-to-text |
 | `SHORTCUT_GROQ_WHISPER_MODEL` | `whisper-large-v3-turbo` | Groq Whisper model |
 | `ELEVENLABS_API_KEY` | unset | Enables ElevenLabs in Voice Studio |

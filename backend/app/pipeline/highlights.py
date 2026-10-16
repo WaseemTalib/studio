@@ -1,4 +1,4 @@
-"""Pick short-form highlights from a transcript with an LLM (Groq or Claude).
+"""Pick short-form highlights from a transcript with an LLM on Groq or another free hosted platform.
 
 Two passes:
 1. Find candidates. The transcript is shown as numbered sentences and the model
@@ -11,17 +11,21 @@ Two passes:
 import json
 import logging
 import math
-import time
+import os
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import TypeVar
 
+import requests
 from pydantic import BaseModel, ValidationError
 
-from ..config import CLAUDE_FAST_MODEL, CLAUDE_MODEL, GROQ_FAST_MODEL, GROQ_LLM_MODEL, GROQ_TPM, LLM_PROVIDER
+from ..config import (GEMINI_API_KEY, GEMINI_MODEL, GROQ_FAST_MODEL, GROQ_LLM_MODEL, GROQ_TPM, LLM_PROVIDER,
+                      OPENROUTER_API_KEY, OPENROUTER_MODEL, SAMBANOVA_API_KEY, SAMBANOVA_MODEL)
 from ..presets import GENRES
 from ..schemas import Candidate, CandidateSet, ProjectOptions, Review, ReviewSet, Transcript
-from . import cancel
+from . import limits
 from .sentences import Sentence, cut_points, split_sentences
 
 T = TypeVar("T", bound=BaseModel)
@@ -66,10 +70,6 @@ class HighlightError(RuntimeError):
 
 class RequestTooLarge(HighlightError):
     """The provider rejected one request as too large; a smaller request may succeed."""
-
-
-class DailyLimitReached(HighlightError):
-    """Groq's per-day allowance for one model is used up. Each model has its own allowance."""
 
 
 @dataclass
@@ -314,14 +314,52 @@ def _normalize(candidates: list[Candidate], sentences: list[Sentence], window: l
     return ok
 
 
-def _structured(system: str, prompt: str, schema: type[T], clip_model: str = "quality") -> T:
+# --- Services -----------------------------------------------------------------------
+#
+# A service choice is "service:model", e.g. "groq:openai/gpt-oss-120b". When a service hits a
+# usage limit, limits.handle() waits it out or asks the user to wait or switch.
+
+
+def _default_choice(clip_model: str) -> str:
     fast = clip_model == "fast"
-    if LLM_PROVIDER == "groq":
-        return _ask_groq_any(system, prompt, schema,
-                             [GROQ_FAST_MODEL, GROQ_LLM_MODEL] if fast else [GROQ_LLM_MODEL, GROQ_FAST_MODEL])
-    if LLM_PROVIDER == "anthropic":
-        return _ask_claude(system, prompt, schema, CLAUDE_FAST_MODEL if fast else CLAUDE_MODEL)
-    raise HighlightError(f"Unknown SHORTCUT_LLM_PROVIDER {LLM_PROVIDER!r} (use 'groq' or 'anthropic')")
+    choices = {
+        "groq": f"groq:{GROQ_FAST_MODEL if fast else GROQ_LLM_MODEL}",
+        **{service: f"{service}:{p.model}" for service, p in HOSTED.items()},
+    }
+    if LLM_PROVIDER not in choices:
+        raise HighlightError(f"Unknown SHORTCUT_LLM_PROVIDER {LLM_PROVIDER!r} "
+                             f"(use one of: {', '.join(choices)})")
+    return choices[LLM_PROVIDER]
+
+
+def _structured(system: str, prompt: str, schema: type[T], clip_model: str = "quality") -> T:
+    choice = limits.override("highlights") or _default_choice(clip_model)
+    while True:
+        service, _, model = choice.partition(":")
+        try:
+            return _SERVICES[service](system, prompt, schema, model)
+        except limits.LimitReached as e:
+            try:
+                choice = limits.handle("highlights", e.limit, highlight_options(choice)) or choice
+            except limits.LimitReached as again:  # no project to ask (e.g. a test run)
+                raise HighlightError(str(again)) from again
+
+
+def highlight_options(current: str) -> list[limits.Option]:
+    """Services the user can switch highlight picking to."""
+    groq_key = bool(os.environ.get("GROQ_API_KEY"))
+    groq_reason = None if groq_key else "Add GROQ_API_KEY to backend/.env (free key at console.groq.com)"
+    options = [
+        limits.Option(f"groq:{GROQ_LLM_MODEL}", f"Groq {GROQ_LLM_MODEL}",
+                      "Free tier; best quality on Groq. Each Groq model has its own limits.", groq_key, groq_reason),
+        limits.Option(f"groq:{GROQ_FAST_MODEL}", f"Groq {GROQ_FAST_MODEL}",
+                      "Free tier; smaller and faster. Each Groq model has its own limits.", groq_key, groq_reason),
+    ]
+    for service, p in HOSTED.items():
+        options.append(limits.Option(
+            f"{service}:{p.model}", f"{limits.SERVICE_LABELS[service]} {p.label_model or p.model}", p.detail,
+            bool(p.key), None if p.key else f"Add {p.key_name} to backend/.env (free key at {p.signup})"))
+    return [o for o in options if o.id != current]
 
 
 def _tokens(text: str) -> int:
@@ -330,16 +368,36 @@ def _tokens(text: str) -> int:
 
 
 def _line_budget(system: str, prompt_header: str, schema: type[BaseModel]) -> int | None:
-    """Tokens left for transcript lines in one request, or None when the provider needs no splitting.
+    """Tokens left for transcript lines in one request, or None when the service needs no splitting.
 
-    Half of Groq's per-minute limit goes to the prompt; the rest is left for the model's
+    Groq: half of the per-minute limit goes to the prompt; the rest is left for the model's
     reasoning and answer, which count against the same limit. Groq's check also adds an
     overhead this estimate cannot see, so _ask_parts halves parts it rejects."""
     if LLM_PROVIDER != "groq" or GROQ_TPM <= 0:
         return None
+    total = GROQ_TPM // 2
     # The JSON-mode fallback repeats the schema in the system prompt.
     fixed = _tokens(system) + _tokens(prompt_header) + _tokens(json.dumps(schema.model_json_schema()))
-    return max(GROQ_TPM // 2 - fixed, 500)
+    return max(total - fixed, 500)
+
+
+def _validated(schema: type[T], content: str | None) -> T | None:
+    try:
+        return schema.model_validate(json.loads(content or ""))
+    except (json.JSONDecodeError, ValidationError):
+        return None
+
+
+def _attempts(system: str, schema: type[BaseModel], prompt_only: bool = False) -> list[tuple[str, dict | None]]:
+    """Strict JSON-schema mode first; if the service can't produce valid JSON that way, plain
+    JSON mode with the schema in the prompt, validated locally. Services that support neither
+    response format (some free endpoints) get the schema in the prompt only."""
+    strict = {"type": "json_schema",
+              "json_schema": {"name": schema.__name__, "strict": True, "schema": schema.model_json_schema()}}
+    loose_system = (f"{system}\n\nRespond with only a JSON object matching this JSON Schema:\n"
+                    f"{json.dumps(schema.model_json_schema())}")
+    attempts = [(system, strict), (loose_system, {"type": "json_object"})]
+    return attempts + [(loose_system, None)] if prompt_only else attempts
 
 
 # Groq's default max_completion_tokens is 1024. gpt-oss reasons before answering, so that
@@ -356,44 +414,18 @@ def _groq_error_code(e: Exception) -> str | None:
     return None
 
 
-# Models whose daily allowance ran out, and when. The allowance is a rolling 24-hour window
-# that frees up gradually, so a model is tried again after a while rather than never.
-_exhausted: dict[str, float] = {}
-EXHAUSTED_RECHECK_SECONDS = 30 * 60
-
-
-def _ask_groq_any(system: str, prompt: str, schema: type[T], models: list[str]) -> T:
-    """Ask the first model whose daily allowance is not used up; later ones are fallbacks."""
-    models = list(dict.fromkeys(models))
-    for model in models:
-        if time.time() - _exhausted.get(model, float("-inf")) < EXHAUSTED_RECHECK_SECONDS:
-            continue
-        try:
-            return _ask_groq(system, prompt, schema, model)
-        except DailyLimitReached:
-            _exhausted[model] = time.time()
-            if model != models[-1]:
-                log.warning("Groq daily token limit reached for %s; using another Groq model", model)
-    raise DailyLimitReached(
-        f"Groq's daily token limit is used up for {' and '.join(models)}. It frees up gradually over "
-        "24 hours, so retry later, upgrade your Groq tier, or set SHORTCUT_LLM_PROVIDER=anthropic"
-    )
+def _groq_message(e: Exception) -> str:
+    body = getattr(e, "body", None)
+    err = body.get("error", body) if isinstance(body, dict) else None
+    return err.get("message", str(e)) if isinstance(err, dict) else str(e)
 
 
 def _ask_groq(system: str, prompt: str, schema: type[T], model: str) -> T:
-    """Strict JSON-schema mode first; if Groq can't produce valid JSON that way, retry in
-    plain JSON mode with the schema in the prompt and validate locally."""
     import groq
 
-    client = groq.Groq(max_retries=0)  # rate limits are retried by _groq_create, which tells them apart
-    strict = {"type": "json_schema",
-              "json_schema": {"name": schema.__name__, "strict": True, "schema": schema.model_json_schema()}}
-    loose_system = (f"{system}\n\nRespond with only a JSON object matching this JSON Schema:\n"
-                    f"{json.dumps(schema.model_json_schema())}")
-    attempts = [(system, strict), (loose_system, {"type": "json_object"})]
-
+    client = groq.Groq(max_retries=0)  # rate limits are handled by limits.handle()
     last_problem = ""
-    for attempt_system, response_format in attempts:
+    for attempt_system, response_format in _attempts(system, schema):
         try:
             response = _groq_create(
                 client,
@@ -405,10 +437,6 @@ def _ask_groq(system: str, prompt: str, schema: type[T], model: str) -> T:
             )
         except groq.AuthenticationError as e:
             raise HighlightError("Groq API key is missing or invalid (set GROQ_API_KEY)") from e
-        except groq.RateLimitError as e:
-            if _is_daily_limit(e):
-                raise DailyLimitReached(f"Groq daily token limit reached for {model}") from e
-            raise HighlightError("Groq rate limit reached; retry later") from e
         except groq.BadRequestError as e:
             if _groq_error_code(e) == "json_validate_failed":
                 last_problem = "Groq could not produce valid JSON"
@@ -425,72 +453,118 @@ def _ask_groq(system: str, prompt: str, schema: type[T], model: str) -> T:
             raise HighlightError("Could not reach the Groq API") from e
 
         choice = response.choices[0]
-        try:
-            return schema.model_validate(json.loads(choice.message.content or ""))
-        except (json.JSONDecodeError, ValidationError):
-            last_problem = f"Groq returned an unusable answer (finish_reason={choice.finish_reason})"
+        if (result := _validated(schema, choice.message.content)) is not None:
+            return result
+        last_problem = f"Groq returned an unusable answer (finish_reason={choice.finish_reason})"
     raise HighlightError(last_problem)
 
 
-GROQ_RATE_LIMIT_RETRIES = 6
-
-
-def _is_daily_limit(e: Exception) -> bool:
-    """Groq names the limit that was hit: "tokens per day (TPD)" or "requests per day (RPD)"."""
-    body = getattr(e, "body", None)
-    err = body.get("error", body) if isinstance(body, dict) else None
-    message = err.get("message", "") if isinstance(err, dict) else str(e)
-    return "per day" in message
-
-
-def _groq_create(client, **request):
-    """Split transcripts send several requests in a row, which can exceed the per-minute
-    token limit; wait for the window Groq names in retry-after and send again. A per-day
-    limit is not waited out: its retry-after only says when this one request would fit."""
+def _groq_create(client, model: str, **request):
+    """One request; its rate-limit headers are kept so limits can be shown to the user."""
     import groq
 
-    for attempt in range(GROQ_RATE_LIMIT_RETRIES + 1):
-        try:
-            return client.chat.completions.create(**request)
-        except groq.RateLimitError as e:
-            if attempt == GROQ_RATE_LIMIT_RETRIES or _is_daily_limit(e):
-                raise
-            try:
-                wait = float(e.response.headers.get("retry-after", ""))
-            except ValueError:
-                wait = 15.0
-            wait = min(max(wait, 1.0), 65.0)
-            log.info("Groq rate limit reached; waiting %.0fs", wait)
-            cancel.sleep(wait)
-
-
-def _ask_claude(system: str, prompt: str, schema: type[T], model: str) -> T:
-    import anthropic
-
-    client = anthropic.Anthropic()
     try:
-        response = client.messages.parse(
-            model=model,
-            max_tokens=16000,
-            output_config={"effort": "medium"},
-            system=system,
-            messages=[{"role": "user", "content": prompt}],
-            output_format=schema,
-        )
-    except anthropic.AuthenticationError as e:
-        raise HighlightError("Claude API credentials are missing or invalid (set ANTHROPIC_API_KEY)") from e
-    except anthropic.RateLimitError as e:
-        raise HighlightError("Claude API rate limit reached; retry later") from e
-    except anthropic.APIStatusError as e:
-        raise HighlightError(f"Claude API error {e.status_code}: {e.message}") from e
-    except anthropic.APIConnectionError as e:
-        raise HighlightError("Could not reach the Claude API") from e
+        raw = client.chat.completions.with_raw_response.create(model=model, **request)
+    except groq.RateLimitError as e:
+        raise limits.LimitReached(limits.from_groq("groq", model, _groq_message(e), e.response.headers)) from e
+    limits.record("groq", model, raw.headers)
+    return raw.parse()
 
-    if response.stop_reason == "refusal":
-        raise HighlightError("Claude declined to analyze this transcript")
-    if response.parsed_output is None:
-        raise HighlightError(f"Claude returned no usable answer (stop_reason={response.stop_reason})")
-    return response.parsed_output
+
+@dataclass(frozen=True)
+class Hosted:
+    """A hosted platform with a free tier that speaks the OpenAI chat-completions protocol."""
+
+    base: str
+    key: str
+    key_name: str
+    model: str
+    signup: str
+    detail: str
+    label_model: str | None = None  # shown instead of the model id
+    reasoning: bool = False         # accepts reasoning_effort
+
+
+HOSTED = {
+    "gemini": Hosted("https://generativelanguage.googleapis.com/v1beta/openai", GEMINI_API_KEY, "GEMINI_API_KEY",
+                     GEMINI_MODEL or "auto", "aistudio.google.com", "Free tier with a generous daily allowance.",
+                     label_model=GEMINI_MODEL or "Flash", reasoning=True),
+    "openrouter": Hosted("https://openrouter.ai/api/v1", OPENROUTER_API_KEY, "OPENROUTER_API_KEY", OPENROUTER_MODEL,
+                         "openrouter.ai", "Free gpt-oss-120b; free models have daily request limits."),
+    "sambanova": Hosted("https://api.sambanova.ai/v1", SAMBANOVA_API_KEY, "SAMBANOVA_API_KEY", SAMBANOVA_MODEL,
+                        "cloud.sambanova.ai", "Free tier; runs gpt-oss-120b."),
+}
+
+
+def _ask_hosted(service: str, system: str, prompt: str, schema: type[T], model: str) -> T:
+    p = HOSTED[service]
+    label = limits.SERVICE_LABELS[service]
+    if not p.key:
+        raise HighlightError(f"{label} needs {p.key_name} in backend/.env")
+    if service == "gemini" and model == "auto":
+        model = _gemini_model(p.base, p.key)
+    attempts = _attempts(system, schema, prompt_only=True)
+    last_problem = ""
+    for n, (attempt_system, response_format) in enumerate(attempts):
+        body = {"model": model,
+                "messages": [{"role": "system", "content": attempt_system}, {"role": "user", "content": prompt}]}
+        if response_format:
+            body["response_format"] = response_format
+        if p.reasoning:
+            body["reasoning_effort"] = "medium"
+        try:
+            r = requests.post(f"{p.base}/chat/completions", json=body, timeout=900,
+                              headers={"Authorization": f"Bearer {p.key}"})
+        except requests.RequestException as e:
+            raise HighlightError(f"Could not reach {label}") from e
+        if r.status_code == 429:
+            raise limits.LimitReached(limits.from_headers(service, model, r.text[:500], r.headers))
+        if r.status_code in (401, 403):
+            raise HighlightError(f"{label} API key is missing or invalid ({p.key_name})")
+        if r.status_code == 413:
+            raise RequestTooLarge(f"Request too large for {label}")
+        if r.status_code in (400, 422) and n + 1 < len(attempts):
+            # Some free endpoints reject a response format; try the next, simpler one.
+            last_problem = f"{label} rejected the request: {r.text[:200]}"
+            continue
+        if r.status_code >= 400:
+            raise HighlightError(f"{label} error {r.status_code}: {r.text[:300]}")
+        message = (r.json().get("choices") or [{}])[0].get("message") or {}
+        if (result := _validated(schema, _json_text(message.get("content")))) is not None:
+            return result
+        last_problem = f"{label} returned an unusable answer"
+    raise HighlightError(last_problem)
+
+
+def _json_text(content: str | None) -> str | None:
+    """The JSON object in an answer, without a ```json fence some models add in prompt-only mode."""
+    if content and (m := re.search(r"```(?:json)?\s*(\{.*\})\s*```", content, re.S)):
+        return m.group(1)
+    return content
+
+
+@lru_cache(maxsize=1)
+def _gemini_model(base: str, key: str) -> str:
+    """The newest generally available Flash model on the account."""
+    try:
+        r = requests.get(f"{base}/models", headers={"Authorization": f"Bearer {key}"}, timeout=30)
+        r.raise_for_status()
+        ids = [m["id"].removeprefix("models/") for m in r.json().get("data", [])]
+    except (requests.RequestException, ValueError, KeyError) as e:
+        raise HighlightError("Could not list Gemini models; set SHORTCUT_GEMINI_MODEL") from e
+    skip = ("lite", "image", "tts", "live", "audio", "exp", "preview", "embedding", "thinking")
+    flash = [m for m in ids if "flash" in m and not any(w in m for w in skip)]
+    if not flash:
+        raise HighlightError("No Gemini Flash model found; set SHORTCUT_GEMINI_MODEL")
+    version = lambda m: tuple(float(x) for x in re.findall(r"\d+(?:\.\d+)?", m)[:2])
+    return max(flash, key=version)
+
+
+def _hosted_asker(service: str) -> Callable:
+    return lambda system, prompt, schema, model: _ask_hosted(service, system, prompt, schema, model)
+
+
+_SERVICES: dict[str, Callable] = {"groq": _ask_groq, **{service: _hosted_asker(service) for service in HOSTED}}
 
 
 def clip_transcript(transcript: Transcript, start: float, end: float) -> str:

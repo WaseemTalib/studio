@@ -22,8 +22,8 @@ from . import db, presets, tts
 from .config import PROJECTS_DIR, VOICE_DIR
 from .pipeline import media, render, runner
 from .pipeline.srt import SrtError, parse_srt
-from .schemas import (SOURCE_SPECIFIC_OPTIONS, AddLibraryVoice, ClipRender, ClipUpdate, ProjectOptions, ProjectUpdate,
-                      SourceInfoRequest, SpeechRequest, TemplateIn)
+from .schemas import (SOURCE_SPECIFIC_OPTIONS, AddLibraryVoice, ClipRender, ClipUpdate, LimitChoice, ProjectOptions,
+                      ProjectUpdate, SourceInfoRequest, SpeechRequest, TemplateIn)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -243,6 +243,18 @@ def cancel_project(pid: str) -> dict:
         raise HTTPException(409, "Only queued or processing projects can be cancelled")
     if not runner.cancel_project(pid):  # no job on this server for it: nothing left to stop
         db.mark_cancelled(pid)
+    return _live(db.get_project(pid))
+
+
+@app.post("/api/projects/{pid}/limit-choice")
+def limit_choice(pid: str, body: LimitChoice) -> dict:
+    """Answer a usage-limit question: wait for the reset, or switch to another service."""
+    if db.get_project(pid) is None:
+        raise HTTPException(404, "Project not found")
+    try:
+        runner.choose_on_limit(pid, body.action, body.option)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
     return _live(db.get_project(pid))
 
 

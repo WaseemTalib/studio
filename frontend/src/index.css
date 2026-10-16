@@ -385,3 +385,21 @@ details p { margin-top: 8px; font-size: 13px; line-height: 1.5; }
   .vs-player-meta { display: none; }
   .vs-player a { display: none; }
 }
+
+/* --- Usage limits --------------------------------------------------------------- */
+.limit-dialog { width: min(620px, 100%); overflow: auto; }
+.limit-facts { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 0; padding: 12px 14px; background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 14px; }
+.limit-facts dt { color: var(--muted); }
+.limit-facts dd { margin: 0; }
+.limit-options { display: flex; flex-direction: column; gap: 6px; }
+.limit-option { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); cursor: pointer; }
+.limit-option > span { display: flex; flex-direction: column; gap: 2px; }
+.limit-option.on { border-color: var(--accent); background: var(--accent-soft); }
+.limit-option.disabled { cursor: not-allowed; opacity: 0.6; }
+.limit-option input { margin-top: 3px; }
+.limit-reason { color: var(--warn); }
+.limit-actions { display: flex; justify-content: space-between; align-items: center; }
+.limit-line { color: var(--warn); }
+.limit-line.needs { font-weight: 600; }
+.limit-notice { border-color: rgb(251 191 36 / 0.4); }
+@media (max-width: 600px) { .limit-facts { grid-template-columns: 1fr; } .limit-facts dd { margin-bottom: 6px; } }

@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { api, formatEta, STAGE_LABEL, type Project } from '../api'
+import { LimitLine } from './LimitDialog'
 
 export default function ProjectStatus({ project }: { project: Project }) {
   if (project.status === 'failed') return <span className="badge failed" title={project.error ?? ''}>Failed</span>
@@ -15,7 +16,8 @@ export default function ProjectStatus({ project }: { project: Project }) {
         <span className="progress-bar" style={{ width: `${percent}%` }} />
         <span className="progress-label">{label} · {percent}%</span>
       </span>
-      {eta && <span className="progress-eta">{eta}</span>}
+      {project.limit && !project.cancelling ? <span className="progress-eta"><LimitLine state={project.limit} /></span>
+        : eta && <span className="progress-eta">{eta}</span>}
     </span>
   )
 }

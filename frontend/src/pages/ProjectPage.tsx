@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, formatTime, isWorking, type Clip, type Project } from '../api'
 import { layoutLabel } from '../components/LookControls'
+import { LimitDialog, LimitLine } from '../components/LimitDialog'
 import ProjectStatus, { CancelButton } from '../components/ProjectStatus'
 import { usePolling } from '../usePolling'
 
@@ -11,6 +12,7 @@ export default function ProjectPage() {
   const [clips, setClips] = useState<Clip[]>([])
   const [error, setError] = useState<string | null>(null)
   const [sort, setSort] = useState<'score' | 'time'>('score')
+  const [limitOpen, setLimitOpen] = useState(false)  // reopened while waiting, to switch instead
 
   const load = useCallback(async () => {
     try {
@@ -82,10 +84,20 @@ export default function ProjectPage() {
           </button>
         </div>
       )}
-      {working && (
+      {working && project.limit?.mode === 'wait' && (
+        <div className="notice limit-notice">
+          <p><LimitLine state={project.limit} /></p>
+          <button onClick={() => setLimitOpen(true)}>Switch instead…</button>
+        </div>
+      )}
+      {working && !project.limit && (
         <div className="notice">
           <p>Working on it — this page updates automatically. Long videos can take several minutes.</p>
         </div>
+      )}
+      {working && project.limit && !project.cancelling
+        && (project.limit.mode === 'ask' || (project.limit.mode === 'wait' && limitOpen)) && (
+        <LimitDialog project={project} onUpdate={setProject} onClose={() => setLimitOpen(false)} />
       )}
 
       {clips.length > 0 && (

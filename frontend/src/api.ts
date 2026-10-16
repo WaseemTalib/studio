@@ -108,11 +108,56 @@ export interface Project {
   eta_scope: 'import' | 'total' | null
   /** A cancel was requested and the job is stopping. */
   cancelling: boolean
+  /** A usage limit the job is waiting on or asking about; null when none. */
+  limit: LimitState | null
   error: string | null
   duration: number | null
   thumbnail: string | null
   clip_count: number
   created_at: number
+}
+
+export interface LimitInfo {
+  service: string
+  service_label: string
+  model: string
+  /** e.g. "tokens per day" */
+  name: string
+  /** e.g. "TPD"; null when the service only says "try again later" */
+  code: string | null
+  limit: number | null
+  used: number | null
+  requested: number | null
+  remaining: number | null
+  /** Seconds until this request fits again, when the project was fetched. */
+  resets_in: number
+  message: string
+  /** Latest rate-limit headers from the service, if it sends them. */
+  recent: {
+    requests_per_day: number | null
+    requests_left_today: number | null
+    requests_reset_in: number | null
+    tokens_per_minute: number | null
+    tokens_left_this_minute: number | null
+    tokens_reset_in: number | null
+  } | null
+}
+
+export interface LimitOption {
+  id: string
+  label: string
+  detail: string
+  available: boolean
+  reason: string | null
+}
+
+export interface LimitState {
+  /** ask: waiting for the user's choice; wait: user chose to wait; auto_wait: short per-minute wait */
+  mode: 'ask' | 'wait' | 'auto_wait'
+  stage: 'transcribe' | 'highlights' | null
+  limit: LimitInfo
+  options: LimitOption[]
+  seconds_left: number | null
 }
 
 export interface Clip {
@@ -181,6 +226,12 @@ export const api = {
     }),
   retryProject: (id: string) => request<Project>(`/api/projects/${id}/retry`, { method: 'POST' }),
   cancelProject: (id: string) => request<Project>(`/api/projects/${id}/cancel`, { method: 'POST' }),
+  limitChoice: (id: string, action: 'wait' | 'switch', option?: string) =>
+    request<Project>(`/api/projects/${id}/limit-choice`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action, option: option ?? null }),
+    }),
   createProject: (
     source: { url: string } | { file: File },
     options: ProjectOptions,
