@@ -19,7 +19,7 @@ burned-in captions) → clip library with virality score, hook, reasoning, hasht
 # Backend (http://127.0.0.1:8000)
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-export GROQ_API_KEY=gsk_...          # or ANTHROPIC_API_KEY=sk-ant-...
+cp .env.example .env                 # then add GROQ_API_KEY (or ANTHROPIC_API_KEY) to .env
 .venv/bin/uvicorn app.main:app --reload
 
 # Frontend (http://localhost:5173), in another terminal
@@ -49,6 +49,9 @@ page: a text editor, voice and model settings, a history of everything you gener
 Generated audio is saved in `backend/data/voice/`.
 
 ## Configuration (environment)
+
+Put keys and settings in `backend/.env` (start from `backend/.env.example`; the file is ignored by git), or
+export them in your shell, which takes precedence. Restart the backend after changing them.
 
 | Variable | Default | Purpose |
 |---|---|---|

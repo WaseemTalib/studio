@@ -1,10 +1,15 @@
-"""Runtime settings, read once from the environment."""
+"""Runtime settings, read once from the environment and backend/.env."""
 
 import os
 import sys
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+# Keys and settings can live in backend/.env (see .env.example). Variables already set in the
+# shell take precedence; the API clients (Groq, Anthropic) read their keys from the environment too.
+load_dotenv(BACKEND_DIR / ".env", override=False)
 DATA_DIR = Path(os.environ.get("SHORTCUT_DATA_DIR", BACKEND_DIR / "data")).resolve()
 DB_PATH = DATA_DIR / "studio.db"
 PROJECTS_DIR = DATA_DIR / "projects"
