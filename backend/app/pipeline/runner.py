@@ -7,8 +7,10 @@ import threading
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from .. import db
 from ..config import PROJECTS_DIR
@@ -128,6 +130,8 @@ class _Active:
     of an import says nothing about the rest. While importing, only the time left for the
     import is estimated; afterwards, later stages are estimated from the pace since the import."""
 
+    stages: dict[str, tuple[float, float]] = field(default_factory=lambda: STAGES)
+    record: Callable[..., None] = lambda jid, **fields: None  # saves status/stage/progress/error
     job: cancel.Job = field(default_factory=cancel.Job)
     decider: _Decider = field(init=False)
     started_at: float = 0.0
@@ -150,7 +154,7 @@ class _Active:
             if self.work_started_at is None and stage != "ingest":
                 self.work_started_at, self.work_start_progress = now, progress
             elif self.stage not in (None, "ingest") and now - self.stage_started_at < REUSED_STAGE_SECONDS:
-                self.reused += progress - STAGES[self.stage][0]
+                self.reused += progress - self.stages[self.stage][0]
             self.stage, self.stage_started_at = stage, now
         self.progress = progress
 
@@ -159,7 +163,7 @@ class _Active:
         The current stage runs at its own measured pace, later stages at the pace since importing."""
         if self.stage is None:
             return None
-        lo, hi = STAGES[self.stage]
+        lo, hi = self.stages[self.stage]
         in_stage = now - self.stage_started_at
         fraction = (self.progress - lo) / (hi - lo)
         stage_left = in_stage * (1 - fraction) / fraction if fraction >= 0.05 and in_stage >= MIN_ESTIMATE_SECONDS else None
@@ -194,20 +198,27 @@ def media_url(path: Path) -> str:
 
 
 def submit(pid: str, source_url: str | None) -> None:
-    active = _Active()
+    submit_job(pid, lambda: _process(pid, source_url), STAGES, db.update_project)
+
+
+def submit_job(jid: str, process: Callable[[], Any], stages: dict[str, tuple[float, float]],
+               record: Callable[..., None]) -> None:
+    """Queue a job (a project, or a video from the video maker) on the shared worker. `record(jid, **fields)`
+    saves its status; process() reports progress through stage()."""
+    active = _Active(stages=stages, record=record)
     with _active_lock:
-        _active[pid] = active
-    _executor.submit(_run, pid, source_url, active)
+        _active[jid] = active
+    _executor.submit(_run, jid, process, active)
 
 
 def cancel_project(pid: str) -> bool:
-    """Stop a queued or running project. False if this server has no job for it."""
+    """Stop a queued or running job. False if this server has no job for it."""
     with _active_lock:
         active = _active.get(pid)
     if active is None:
         return False
     if not active.job.cancel():  # still queued: it will never start, so record the outcome here
-        db.mark_cancelled(pid)
+        active.record(pid, status="cancelled", stage=None, error=None)
     return True
 
 
@@ -235,31 +246,34 @@ def choose_on_limit(pid: str, action: str, option: str | None) -> None:
     active.decider.choose(action, option)
 
 
-def _stage(pid: str, stage: str, fraction: float = 0.0) -> None:
+def stage(jid: str, name: str, fraction: float = 0.0) -> None:
+    """Report a running job's stage and how far into it it is (0..1)."""
     cancel.check()
-    lo, hi = STAGES[stage]
-    progress = round(lo + (hi - lo) * fraction, 4)
     with _active_lock:
-        active = _active.get(pid)
-    if active is not None:
-        active.enter(stage, progress, active.clock())
-    db.update_project(pid, status="processing", stage=stage, progress=progress)
+        active = _active.get(jid)
+    if active is None:
+        return
+    lo, hi = active.stages[name]
+    progress = round(lo + (hi - lo) * fraction, 4)
+    active.enter(name, progress, active.clock())
+    active.record(jid, status="processing", stage=name, progress=progress)
 
 
-def _run(pid: str, source_url: str | None, active: _Active) -> None:
+
+def _run(pid: str, process: Callable[[], Any], active: _Active) -> None:
     try:
         if not active.job.start():
             return
         active.started_at = time.time()
         with cancel.bound(active.job), limits.bound(active.decider):
-            _process(pid, source_url)
-    except Exception as e:  # surface every failure on the project instead of losing it in a thread
+            process()
+    except Exception as e:  # surface every failure on the job instead of losing it in a thread
         if active.job.cancelled:  # includes errors from requests and processes cut off by the cancel
-            log.info("project %s cancelled", pid)
-            db.update_project(pid, status="cancelled", stage=None, error=None)
+            log.info("job %s cancelled", pid)
+            active.record(pid, status="cancelled", stage=None, error=None)
         else:
-            log.error("project %s failed:\n%s", pid, traceback.format_exc())
-            db.update_project(pid, status="failed", error=str(e) or e.__class__.__name__)
+            log.error("job %s failed:\n%s", pid, traceback.format_exc())
+            active.record(pid, status="failed", error=str(e) or e.__class__.__name__)
     finally:
         with _active_lock:
             if _active.get(pid) is active:
@@ -274,18 +288,18 @@ def _process(pid: str, source_url: str | None) -> None:
     work = project_dir(pid)
 
     # A retry reuses the finished download and transcript; partial yt-dlp files never match.
-    _stage(pid, "ingest")
+    stage(pid, "ingest")
     src = find_source(pid)
     if src is None:
         if not source_url:
             raise media.MediaError("Uploaded source file is missing")
-        src = media.download(source_url, work, lambda f: _stage(pid, "ingest", DOWNLOAD_SHARE * f))
+        src = media.download(source_url, work, lambda f: stage(pid, "ingest", DOWNLOAD_SHARE * f))
     info = media.probe(src)
     thumb = work / "thumbnail.jpg"
     media.thumbnail(src, min(info["duration"] * 0.1, 5.0), thumb)
     db.update_project(pid, duration=info["duration"], thumbnail=media_url(thumb))
 
-    _stage(pid, "transcribe")
+    stage(pid, "transcribe")
     transcript = load_transcript(pid)
     if transcript is not None and transcript.duration < info["duration"]:
         transcript.duration = info["duration"]  # imported subtitles end before the video does
@@ -293,15 +307,15 @@ def _process(pid: str, source_url: str | None) -> None:
         audio = work / "audio.wav"
         media.extract_audio(src, audio)
         transcript = transcribe(audio, info["duration"], options.language,
-                                lambda f: _stage(pid, "transcribe", f))
+                                lambda f: stage(pid, "transcribe", f))
         (work / "transcript.json").write_text(transcript.model_dump_json())
         audio.unlink(missing_ok=True)
 
-    _stage(pid, "highlights")
+    stage(pid, "highlights")
     if options.mode == "full":
         highlights = [whole_video(transcript, options, project["title"])]
     else:
-        highlights = pick_highlights(transcript, options, lambda f: _stage(pid, "highlights", f))
+        highlights = pick_highlights(transcript, options, lambda f: stage(pid, "highlights", f))
 
     clips_dir = work / "clips"
     shutil.rmtree(clips_dir, ignore_errors=True)
@@ -310,7 +324,7 @@ def _process(pid: str, source_url: str | None) -> None:
     words = transcript_words(transcript)
     clips = []
     for i, h in enumerate(highlights):
-        _stage(pid, "render", i / len(highlights))
+        stage(pid, "render", i / len(highlights))
         cid = db.new_id()
         video, cover, layout = _render_files(src, (info["width"], info["height"]), words, h.start, h.end,
                                              look, h.title, clips_dir, cid, version=1)

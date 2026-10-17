@@ -62,18 +62,19 @@ def bound(job: Job) -> Iterator[None]:
         _local.job = None
 
 
-def _current() -> Job | None:
+def current() -> Job | None:
+    """The job bound to this thread (bind it in helper threads too, so they can be cancelled)."""
     return getattr(_local, "job", None)
 
 
 def check() -> None:
-    job = _current()
+    job = current()
     if job is not None and job.cancelled:
         raise Cancelled()
 
 
 def sleep(seconds: float) -> None:
-    job = _current()
+    job = current()
     if job is None:
         time.sleep(seconds)
     elif job._event.wait(seconds):
@@ -87,7 +88,7 @@ def run_process(cmd: list[str], timeout: float | None = None,
     With on_line, each stdout line is passed to it as it arrives (timeout is then ignored);
     if on_line raises, for example Cancelled, the process is killed."""
     check()
-    job = _current()
+    job = current()
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                             start_new_session=True)
     if job is not None:

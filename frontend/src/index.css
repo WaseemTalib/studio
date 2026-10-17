@@ -302,8 +302,9 @@ details p { margin-top: 8px; font-size: 13px; line-height: 1.5; }
   .editor-preview { position: static; max-width: 340px; }
 }
 @media (max-width: 640px) {
-  .topbar-inner { gap: 12px; }
-  .nav { display: none; }
+  .topbar-inner { gap: 8px 12px; height: auto; padding: 10px 16px; flex-wrap: wrap; }
+  .nav { order: 3; flex-basis: 100%; overflow-x: auto; }
+  .nav a { white-space: nowrap; }
   .container { padding: 18px 16px 64px; }
   .hero h1 { font-size: 26px; }
   .source-row { flex-wrap: wrap; }
@@ -403,3 +404,42 @@ details p { margin-top: 8px; font-size: 13px; line-height: 1.5; }
 .limit-line.needs { font-weight: 600; }
 .limit-notice { border-color: rgb(251 191 36 / 0.4); }
 @media (max-width: 600px) { .limit-facts { grid-template-columns: 1fr; } .limit-facts dd { margin-bottom: 6px; } }
+
+/* ============ Video maker ============ */
+.maker { display: flex; flex-direction: column; gap: 18px; }
+.maker .page-title { display: flex; flex-direction: column; gap: 6px; }
+.maker input:not([type]), .maker input[type='text'] {
+  background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm);
+  padding: 9px 12px; outline: none; transition: border-color 0.15s, background 0.15s;
+}
+.maker .field.grow { flex: 1 1 220px; }
+.maker .field input[type='range'] { accent-color: var(--accent); min-width: 160px; }
+.maker-text { width: 100%; }
+.maker .side-preview.wide { width: 100%; }
+button.block { width: 100%; padding: 12px 16px; font-size: 15px; }
+.scene-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.scene { display: flex; flex-direction: column; gap: 8px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel-2); }
+.scene textarea { width: 100%; background: var(--panel); }
+.scene .chips-input { background: var(--panel); }
+.scene .chips-input .chip { padding: 2px 4px 2px 10px; font-size: 12px; }
+.scene-head { display: flex; justify-content: space-between; align-items: center; font-size: 13px; }
+.scene-tools { display: inline-flex; gap: 2px; }
+.scene-tools button { padding: 3px 8px; }
+.maker-audio { width: 100%; }
+.maker-wait { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 40; max-width: min(640px, calc(100% - 32px)); box-shadow: var(--shadow); }
+.maker-videos { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
+.maker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 16px; }
+.maker-card { display: flex; flex-direction: column; gap: 12px; padding: 12px; }
+.maker-player { flex: none; width: 100%; height: auto; aspect-ratio: 9 / 16; max-height: 420px; background: #000; border-radius: var(--radius-sm); object-fit: contain; }
+.maker-player.wide { aspect-ratio: 16 / 9; }
+.maker-player.placeholder { display: grid; place-items: center; color: var(--muted); background: var(--panel-2); border: 1px solid var(--border); font-size: 22px; font-weight: 650; }
+.maker-card-body { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.maker-card-title { overflow-wrap: anywhere; }
+.maker-actions { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; }
+.maker-credits { margin: 6px 0 0; padding-left: 18px; }
+.maker-credits a { color: var(--accent); }
+@media (max-width: 640px) {
+  .maker-grid { grid-template-columns: 1fr; }
+}
+.maker .segmented button { text-transform: none; }
+.maker .segmented { flex-wrap: wrap; max-width: 100%; }

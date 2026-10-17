@@ -11,6 +11,7 @@ export default defineConfig(({ mode }) => {
         '/api': api,
         '/media': api,
         '/voice-media': api,
+        '/video-media': api,
       },
     },
   }

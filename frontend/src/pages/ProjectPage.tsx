@@ -97,7 +97,10 @@ export default function ProjectPage() {
       )}
       {working && project.limit && !project.cancelling
         && (project.limit.mode === 'ask' || (project.limit.mode === 'wait' && limitOpen)) && (
-        <LimitDialog project={project} onUpdate={setProject} onClose={() => setLimitOpen(false)} />
+        <LimitDialog state={project.limit} onClose={() => setLimitOpen(false)}
+          onChoose={async (action, option) => setProject(await api.limitChoice(project.id, action, option))}
+          onCancel={async () => setProject(await api.cancelProject(project.id))}
+          cancelPrompt="Cancel this project? The downloaded video and transcript are kept for a retry." />
       )}
 
       {clips.length > 0 && (

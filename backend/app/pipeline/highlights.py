@@ -345,6 +345,20 @@ def _structured(system: str, prompt: str, schema: type[T], clip_model: str = "qu
                 raise HighlightError(str(again)) from again
 
 
+def default_service() -> str:
+    """The configured service and model, "service:model"."""
+    return _default_choice("quality")
+
+
+def ask_once(choice: str, system: str, prompt: str, schema: type[T]) -> T:
+    """One structured request to `choice` ("service:model"). A usage limit raises limits.LimitReached
+    for the caller to show; nothing waits or switches here."""
+    service, _, model = choice.partition(":")
+    if service not in _SERVICES or not model:
+        raise HighlightError(f"Unknown service {choice!r}")
+    return _SERVICES[service](system, prompt, schema, model)
+
+
 def highlight_options(current: str) -> list[limits.Option]:
     """Services the user can switch highlight picking to."""
     groq_key = bool(os.environ.get("GROQ_API_KEY"))

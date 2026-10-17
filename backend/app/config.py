@@ -46,6 +46,12 @@ MODELS_DIR = DATA_DIR / "models"
 # Kokoro model file: kokoro-v1.0.onnx (full), kokoro-v1.0.fp16.onnx or kokoro-v1.0.int8.onnx (smallest).
 KOKORO_MODEL = os.environ.get("SHORTCUT_KOKORO_MODEL", "kokoro-v1.0.onnx")
 
+# Video maker: long videos from a prompt, script or article, with free stock footage.
+PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "")
+PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY", "")
+VIDEOS_DIR = DATA_DIR / "videos"
+MUSIC_DIR = VIDEOS_DIR / "music"  # served with the videos
+
 FFMPEG = os.environ.get("SHORTCUT_FFMPEG", "ffmpeg")
 FFPROBE = os.environ.get("SHORTCUT_FFPROBE", "ffprobe")
 # Prefer the yt-dlp installed with the backend (kept current via requirements) over an
@@ -58,3 +64,5 @@ SHORT_SIDE = {"720p": 720, "1080p": 1080, "4k": 2160}
 
 PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 VOICE_DIR.mkdir(parents=True, exist_ok=True)
+VIDEOS_DIR.mkdir(parents=True, exist_ok=True)
+MUSIC_DIR.mkdir(parents=True, exist_ok=True)

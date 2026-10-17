@@ -223,3 +223,96 @@ class AddLibraryVoice(BaseModel):
     public_owner_id: str = Field(min_length=1, max_length=200)
     voice_id: str = Field(min_length=1, max_length=100)
     name: str = Field(min_length=1, max_length=200)
+
+
+# --- Video maker --------------------------------------------------------------------
+# A long video made from a prompt, description, script or news article: a narrated script,
+# stock footage matched to each scene, captions and optional background music.
+
+SourceKind = Literal["prompt", "description", "script", "news"]
+Footage = Literal["pexels", "pixabay", "both", "none"]
+
+
+class ScriptScene(BaseModel):
+    """One scene for the script writer: narration plus stock-footage search terms."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(description="The narration for this scene: 2-4 sentences, spoken word only")
+    search_terms: list[str] = Field(
+        description="2-3 short English stock-footage searches (1-3 words each) for what should be on screen")
+
+
+class ScriptDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(description="Video title, max ~70 characters")
+    description: str = Field(description="One or two sentence video description for YouTube")
+    hashtags: list[str] = Field(description="3-6 relevant hashtags without the # symbol")
+    scenes: list[ScriptScene]
+
+
+class DraftRequest(BaseModel):
+    """Write (or, for kind="script", split and tag) a script."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: SourceKind
+    text: str = Field(default="", max_length=60000)   # the prompt, description, script or article text
+    url: str | None = Field(default=None, max_length=2000)  # news: article link to read
+    minutes: float = Field(default=3, ge=0.5, le=20)  # target narration length
+    language: str = Field(default="English", min_length=2, max_length=40)
+    tone: str = Field(default="", max_length=200)
+    service: str | None = Field(default=None, max_length=200)  # "service:model"; None uses the default
+
+    @model_validator(mode="after")
+    def _has_input(self) -> "DraftRequest":
+        if not self.text.strip() and not (self.kind == "news" and self.url):
+            raise ValueError("Write a prompt or paste text first" if self.kind != "news"
+                             else "Paste an article link or its text")
+        return self
+
+
+class Scene(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(min_length=1, max_length=5000)
+    search_terms: list[str] = Field(default_factory=list, max_length=6)
+
+
+class VideoVoice(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: Literal["elevenlabs", "local"] = "local"
+    voice_id: str = Field(default="af_heart", min_length=1, max_length=100)
+    voice_name: str = Field(default="Heart", min_length=1, max_length=200)
+    model_id: str = Field(default="kokoro-v1.0", min_length=1, max_length=100)
+    settings: VoiceSettings = VoiceSettings()
+
+
+class VideoRequest(BaseModel):
+    """Everything needed to make the video, after the script has been reviewed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2000)
+    hashtags: list[str] = Field(default_factory=list, max_length=20)
+    scenes: list[Scene] = Field(min_length=1, max_length=200)
+    language: str | None = Field(default=None, max_length=10)  # Whisper code for caption timing
+    voice: VideoVoice = VideoVoice()
+    aspect: Aspect = "16:9"
+    resolution: Literal["720p", "1080p"] = "1080p"
+    footage: Footage = "pexels"
+    clip_seconds: float = Field(default=5, ge=2, le=15)  # longest single stock shot
+    transition: Literal["cut", "fade"] = "fade"
+    caption_style: str = "simple"
+    caption_position: Position = "bottom"
+    highlight_color: str = CAPTION_STYLES["simple"].default_highlight
+    words_per_line: int = Field(default=4, ge=1, le=8)
+    title_overlay: bool = False
+    music: str | None = Field(default=None, max_length=200)  # file name in the music library
+    music_volume: float = Field(default=0.12, ge=0, le=1)
+
+    _style = field_validator("caption_style")(LookOptions._style.__func__)
+    _color = field_validator("highlight_color")(LookOptions._color.__func__)

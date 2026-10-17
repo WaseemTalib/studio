@@ -78,6 +78,24 @@ CREATE TABLE IF NOT EXISTS templates (
 );
 """
 
+VIDEOS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS videos (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    request TEXT NOT NULL,              -- JSON VideoRequest: script, voice and look
+    status TEXT NOT NULL,               -- queued | processing | done | failed | cancelled
+    stage TEXT,                         -- voice | captions | footage | render
+    progress REAL NOT NULL DEFAULT 0,   -- 0..1
+    error TEXT,
+    video TEXT,                         -- URL under /video-media
+    thumbnail TEXT,
+    duration REAL,
+    credits TEXT NOT NULL DEFAULT '[]', -- JSON list of stock clips used: provider, author, page
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+"""
+
 # Columns added after the first release, applied to existing databases on startup.
 CLIP_MIGRATIONS = {
     "topic": "TEXT NOT NULL DEFAULT ''",
@@ -109,6 +127,7 @@ def init() -> None:
         conn.executescript(SCHEMA)
         conn.executescript(TEMPLATES_SCHEMA)
         conn.executescript(TTS_SCHEMA)
+        conn.executescript(VIDEOS_SCHEMA)
         clip_columns = {r["name"] for r in conn.execute("PRAGMA table_info(clips)")}
         for name, decl in CLIP_MIGRATIONS.items():
             if name not in clip_columns:
@@ -117,6 +136,11 @@ def init() -> None:
         # Jobs do not survive a restart; surface that instead of leaving them spinning.
         conn.execute(
             "UPDATE projects SET status='failed', error='Interrupted by server restart', updated_at=? "
+            "WHERE status IN ('queued', 'processing')",
+            (time.time(),),
+        )
+        conn.execute(
+            "UPDATE videos SET status='failed', error='Interrupted by server restart', updated_at=? "
             "WHERE status IN ('queued', 'processing')",
             (time.time(),),
         )
@@ -284,3 +308,54 @@ def get_generation(gid: str) -> dict[str, Any] | None:
 def delete_generation(gid: str) -> bool:
     with connect() as conn:
         return conn.execute("DELETE FROM tts_generations WHERE id = ?", (gid,)).rowcount > 0
+
+
+# --- Video maker -------------------------------------------------------------------
+
+
+def _video(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    d["request"] = json.loads(d["request"])
+    d["credits"] = json.loads(d["credits"])
+    return d
+
+
+def create_video(vid: str, title: str, request: dict) -> None:
+    now = time.time()
+    with connect() as conn:
+        conn.execute("INSERT INTO videos (id, title, request, status, created_at, updated_at) "
+                     "VALUES (?, ?, ?, 'queued', ?, ?)", (vid, title, json.dumps(request), now, now))
+
+
+def update_video(vid: str, **fields: Any) -> None:
+    if "credits" in fields:
+        fields["credits"] = json.dumps(fields["credits"])
+    if "request" in fields:
+        fields["request"] = json.dumps(fields["request"])
+    fields["updated_at"] = time.time()
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    with connect() as conn:
+        conn.execute(f"UPDATE videos SET {cols} WHERE id = ?", (*fields.values(), vid))
+
+
+def mark_video_cancelled(vid: str) -> None:
+    """Record a cancel, unless the job already finished on its own."""
+    with connect() as conn:
+        conn.execute("UPDATE videos SET status='cancelled', stage=NULL, error=NULL, updated_at=? "
+                     "WHERE id = ? AND status IN ('queued', 'processing')", (time.time(), vid))
+
+
+def get_video(vid: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM videos WHERE id = ?", (vid,)).fetchone()
+        return _video(row) if row else None
+
+
+def list_videos() -> list[dict[str, Any]]:
+    with connect() as conn:
+        return [_video(r) for r in conn.execute("SELECT * FROM videos ORDER BY created_at DESC").fetchall()]
+
+
+def delete_video(vid: str) -> bool:
+    with connect() as conn:
+        return conn.execute("DELETE FROM videos WHERE id = ?", (vid,)).rowcount > 0

@@ -154,7 +154,7 @@ export interface LimitOption {
 export interface LimitState {
   /** ask: waiting for the user's choice; wait: user chose to wait; auto_wait: short per-minute wait */
   mode: 'ask' | 'wait' | 'auto_wait'
-  stage: 'transcribe' | 'highlights' | null
+  stage: 'transcribe' | 'highlights' | 'script' | 'captions' | 'footage' | null
   limit: LimitInfo
   options: LimitOption[]
   seconds_left: number | null

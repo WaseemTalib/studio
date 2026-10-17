@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { api, type LimitInfo, type LimitState, type Project } from '../api'
+import type { LimitInfo, LimitState } from '../api'
 import { formatWait, useCountdown } from '../useCountdown'
 
 /** "200,000 tokens", "7,200 audio seconds (2h 00m)". */
@@ -12,7 +12,10 @@ function amount(value: number | null, code: string | null): string {
   return n
 }
 
-const STAGE: Record<string, string> = { transcribe: 'Transcription', highlights: 'Finding highlights' }
+const STAGE: Record<string, string> = {
+  transcribe: 'Transcription', highlights: 'Finding highlights', script: 'Writing the script',
+  captions: 'Caption timing', footage: 'Finding stock footage',
+}
 
 function LimitFacts({ info, left }: { info: LimitInfo; left: number | null }) {
   const r = info.recent
@@ -38,13 +41,15 @@ function LimitFacts({ info, left }: { info: LimitInfo; left: number | null }) {
   )
 }
 
-/** Asks what to do when a usage limit is reached: wait for it to free up, or switch. */
-export function LimitDialog({ project, onUpdate, onClose }: {
-  project: Project
-  onUpdate: (p: Project) => void
+/** Asks what to do when a usage limit is reached: wait for it to free up, or switch.
+ *  `onChoose` sends the answer; `onCancel` stops the job (omit it where there is no job). */
+export function LimitDialog({ state, onChoose, onCancel, cancelPrompt, onClose }: {
+  state: LimitState
+  onChoose: (action: 'wait' | 'switch', option?: string) => Promise<void>
+  onCancel?: () => Promise<void>
+  cancelPrompt?: string
   onClose?: () => void
 }) {
-  const state = project.limit as LimitState
   const left = useCountdown(state.limit.resets_in)
   const [pick, setPick] = useState<string>('wait')
   const [busy, setBusy] = useState(false)
@@ -55,7 +60,7 @@ export function LimitDialog({ project, onUpdate, onClose }: {
     setBusy(true)
     setError(null)
     try {
-      onUpdate(await api.limitChoice(project.id, pick === 'wait' ? 'wait' : 'switch', pick === 'wait' ? undefined : pick))
+      await onChoose(pick === 'wait' ? 'wait' : 'switch', pick === 'wait' ? undefined : pick)
       onClose?.()
     } catch (e) {
       setError((e as Error).message)
@@ -64,10 +69,10 @@ export function LimitDialog({ project, onUpdate, onClose }: {
     }
   }
 
-  async function cancelProject() {
-    if (!confirm('Cancel this project? The downloaded video and transcript are kept for a retry.')) return
+  async function cancelJob() {
+    if (!onCancel || (cancelPrompt && !confirm(cancelPrompt))) return
     try {
-      onUpdate(await api.cancelProject(project.id))
+      await onCancel()
       onClose?.()
     } catch (e) {
       setError((e as Error).message)
@@ -82,7 +87,7 @@ export function LimitDialog({ project, onUpdate, onClose }: {
           {waiting && <button type="button" className="ghost" onClick={onClose} aria-label="Close">✕</button>}
         </div>
         <p className="muted small">
-          {STAGE[state.stage ?? ''] ?? 'Processing'} is paused. Nothing switches until you choose; finished work is kept.
+          {STAGE[state.stage ?? ''] ?? 'Processing'} is paused. Nothing switches until you choose{onCancel ? '; finished work is kept' : ''}.
         </p>
         <LimitFacts info={state.limit} left={left} />
 
@@ -110,7 +115,7 @@ export function LimitDialog({ project, onUpdate, onClose }: {
 
         {error && <p className="error small">{error}</p>}
         <div className="limit-actions">
-          <button type="button" className="link danger" onClick={cancelProject}>Cancel project</button>
+          {onCancel ? <button type="button" className="link danger" onClick={cancelJob}>Cancel</button> : <span />}
           <button type="button" className="primary" disabled={busy} onClick={submit}>
             {pick === 'wait' ? (waiting ? 'Keep waiting' : 'Wait') : 'Switch and continue'}
           </button>

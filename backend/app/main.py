@@ -19,11 +19,13 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from . import db, presets, tts
-from .config import PROJECTS_DIR, VOICE_DIR
-from .pipeline import media, render, runner
+from .config import MUSIC_DIR, PROJECTS_DIR, VIDEOS_DIR, VOICE_DIR
+from .maker import footage, make, script
+from .pipeline import limits, media, render, runner
+from .pipeline.highlights import HighlightError, default_service, highlight_options
 from .pipeline.srt import SrtError, parse_srt
-from .schemas import (SOURCE_SPECIFIC_OPTIONS, AddLibraryVoice, ClipRender, ClipUpdate, LimitChoice, ProjectOptions,
-                      ProjectUpdate, SourceInfoRequest, SpeechRequest, TemplateIn)
+from .schemas import (SOURCE_SPECIFIC_OPTIONS, AddLibraryVoice, ClipRender, ClipUpdate, DraftRequest, LimitChoice,
+                      ProjectOptions, ProjectUpdate, SourceInfoRequest, SpeechRequest, TemplateIn, VideoRequest)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -36,6 +38,7 @@ app.add_middleware(
 )
 app.mount("/media", StaticFiles(directory=PROJECTS_DIR), name="media")
 app.mount("/voice-media", StaticFiles(directory=VOICE_DIR), name="voice-media")
+app.mount("/video-media", StaticFiles(directory=VIDEOS_DIR), name="video-media")
 
 ALLOWED_UPLOAD_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"}
 
@@ -402,3 +405,134 @@ def tts_history() -> list[dict]:
 def tts_delete(gid: str) -> None:
     if not tts.delete(gid):
         raise HTTPException(404, "Generation not found")
+
+
+# --- Video maker -----------------------------------------------------------------------
+
+
+@app.get("/api/maker/options")
+def maker_options() -> dict:
+    """What the video maker can use: script-writing services, stock footage sites and music."""
+    try:
+        default = default_service()
+    except HighlightError:
+        default = None
+    services = [o.public() for o in highlight_options("")]
+    return {"services": services, "default_service": default, "footage": footage.available(),
+            "music": make.music_library()}
+
+
+@app.post("/api/maker/draft")
+def maker_draft(body: DraftRequest) -> dict:
+    """Write the script (or split and tag the user's). Shown for review before the video is made.
+    When the service hits a usage limit, answers 429 with the limit and the other services."""
+    try:
+        return script.draft(body)
+    except limits.LimitReached as e:
+        current = body.service or default_service()
+        raise HTTPException(429, {"message": str(e), "limit": e.limit.public(),
+                                  "options": [o.public() for o in highlight_options(current)]}) from e
+    except HighlightError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+def _video_live(video: dict | None) -> dict | None:
+    return None if video is None else {**video, **runner.live_status(video["id"])}
+
+
+def _video_or_404(vid: str) -> dict:
+    video = db.get_video(vid)
+    if video is None:
+        raise HTTPException(404, "Video not found")
+    return video
+
+
+@app.get("/api/maker/videos")
+def maker_videos() -> list[dict]:
+    return [_video_live(v) for v in db.list_videos()]
+
+
+@app.post("/api/maker/videos", status_code=201)
+def maker_create(body: VideoRequest) -> dict:
+    if body.music:
+        try:
+            make._music(body.music)
+        except media.MediaError as e:
+            raise HTTPException(422, str(e)) from e
+    try:
+        footage.providers_for(body.footage)
+    except footage.FootageError as e:
+        raise HTTPException(422, str(e)) from e
+    vid = db.new_id()
+    db.create_video(vid, body.title.strip(), body.model_dump())
+    make.submit(vid)
+    return _video_live(db.get_video(vid))
+
+
+@app.get("/api/maker/videos/{vid}")
+def maker_video(vid: str) -> dict:
+    return _video_live(_video_or_404(vid))
+
+
+@app.post("/api/maker/videos/{vid}/cancel")
+def maker_cancel(vid: str) -> dict:
+    video = _video_or_404(vid)
+    if video["status"] not in ("queued", "processing"):
+        raise HTTPException(409, "Only queued or processing videos can be cancelled")
+    if not runner.cancel_project(vid):
+        db.mark_video_cancelled(vid)
+    return _video_live(db.get_video(vid))
+
+
+@app.post("/api/maker/videos/{vid}/retry")
+def maker_retry(vid: str) -> dict:
+    """Make the video again; narration already generated is reused."""
+    video = _video_or_404(vid)
+    if video["status"] in ("queued", "processing"):
+        raise HTTPException(409, "This video is still being made")
+    db.update_video(vid, status="queued", stage=None, progress=0, error=None)
+    make.submit(vid)
+    return _video_live(db.get_video(vid))
+
+
+@app.post("/api/maker/videos/{vid}/limit-choice")
+def maker_limit_choice(vid: str, body: LimitChoice) -> dict:
+    _video_or_404(vid)
+    try:
+        runner.choose_on_limit(vid, body.action, body.option)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+    return _video_live(db.get_video(vid))
+
+
+@app.delete("/api/maker/videos/{vid}", status_code=204)
+def maker_delete(vid: str) -> None:
+    video = _video_or_404(vid)
+    if video["status"] in ("queued", "processing"):
+        raise HTTPException(409, "This video is still being made")
+    db.delete_video(vid)
+    shutil.rmtree(make.video_dir(vid), ignore_errors=True)
+
+
+@app.get("/api/maker/music")
+def maker_music() -> list[dict]:
+    return make.music_library()
+
+
+@app.post("/api/maker/music", status_code=201)
+async def maker_music_upload(file: Annotated[UploadFile, File()]) -> list[dict]:
+    try:
+        name = make.music_name(file.filename or "")
+    except ValueError as e:
+        raise HTTPException(422, str(e)) from e
+    with (MUSIC_DIR / name).open("wb") as out:
+        shutil.copyfileobj(file.file, out, length=4 * 1024 * 1024)
+    return make.music_library()
+
+
+@app.delete("/api/maker/music/{name}", status_code=204)
+def maker_music_delete(name: str) -> None:
+    path = MUSIC_DIR / name
+    if path.parent != MUSIC_DIR or not path.is_file():
+        raise HTTPException(404, "Track not found")
+    path.unlink()
