@@ -22,12 +22,52 @@ class TranscriptionError(RuntimeError):
     pass
 
 
+# Whisper's languages. Groq reports the detected language by name ("Hindi") but only accepts
+# codes ("hi") as input, so names are turned into codes.
+LANGUAGE_CODES = {
+    "english": "en", "chinese": "zh", "german": "de", "spanish": "es", "russian": "ru", "korean": "ko",
+    "french": "fr", "japanese": "ja", "portuguese": "pt", "turkish": "tr", "polish": "pl", "catalan": "ca",
+    "dutch": "nl", "arabic": "ar", "swedish": "sv", "italian": "it", "indonesian": "id", "hindi": "hi",
+    "finnish": "fi", "vietnamese": "vi", "hebrew": "he", "ukrainian": "uk", "greek": "el", "malay": "ms",
+    "czech": "cs", "romanian": "ro", "danish": "da", "hungarian": "hu", "tamil": "ta", "norwegian": "no",
+    "thai": "th", "urdu": "ur", "croatian": "hr", "bulgarian": "bg", "lithuanian": "lt", "latin": "la",
+    "maori": "mi", "malayalam": "ml", "welsh": "cy", "slovak": "sk", "telugu": "te", "persian": "fa",
+    "latvian": "lv", "bengali": "bn", "serbian": "sr", "azerbaijani": "az", "slovenian": "sl", "kannada": "kn",
+    "estonian": "et", "macedonian": "mk", "breton": "br", "basque": "eu", "icelandic": "is", "armenian": "hy",
+    "nepali": "ne", "mongolian": "mn", "bosnian": "bs", "kazakh": "kk", "albanian": "sq", "swahili": "sw",
+    "galician": "gl", "marathi": "mr", "punjabi": "pa", "sinhala": "si", "khmer": "km", "shona": "sn",
+    "yoruba": "yo", "somali": "so", "afrikaans": "af", "occitan": "oc", "georgian": "ka", "belarusian": "be",
+    "tajik": "tg", "sindhi": "sd", "gujarati": "gu", "amharic": "am", "yiddish": "yi", "lao": "lo",
+    "uzbek": "uz", "faroese": "fo", "haitian creole": "ht", "pashto": "ps", "turkmen": "tk", "nynorsk": "nn",
+    "maltese": "mt", "sanskrit": "sa", "luxembourgish": "lb", "myanmar": "my", "tibetan": "bo",
+    "tagalog": "tl", "malagasy": "mg", "assamese": "as", "tatar": "tt", "hawaiian": "haw", "lingala": "ln",
+    "hausa": "ha", "bashkir": "ba", "javanese": "jv", "sundanese": "su", "cantonese": "yue",
+    # other names Whisper accepts for the same languages
+    "burmese": "my", "valencian": "ca", "flemish": "nl", "haitian": "ht", "letzeburgesch": "lb",
+    "pushto": "ps", "panjabi": "pa", "moldavian": "ro", "moldovan": "ro", "sinhalese": "si",
+    "castilian": "es", "mandarin": "zh",
+}
+
+
+def language_code(value: str | None) -> str | None:
+    """A language code for Whisper ("hi") from a code or a name ("Hindi"); None if unknown."""
+    if not value:
+        return None
+    v = value.strip().lower()
+    if v in LANGUAGE_CODES.values():
+        return v
+    if v == "jw":  # older Whisper code for Javanese
+        return "jv"
+    return LANGUAGE_CODES.get(v)
+
+
 def transcribe(audio: Path, duration: float, language: str | None, on_progress: Callable[[float], None]) -> Transcript:
     """Transcribe with the configured engine. When it hits a usage limit, limits.handle() waits
     or asks the user; after a switch, the rest of the audio is done by the chosen engine and
     what is already transcribed is kept."""
     engine = limits.override("transcribe") or _default_engine()
-    done = _Done(language)
+    requested = language_code(language)
+    done = _Done(requested, requested)
     while done.offset < duration:
         service, _, model = engine.partition(":")
         try:
@@ -49,7 +89,8 @@ def transcribe(audio: Path, duration: float, language: str | None, on_progress: 
 class _Done:
     """Transcription so far: everything before `offset` seconds is in `segments`."""
 
-    language: str | None
+    requested: str | None      # the language the user chose; None detects it per request
+    language: str | None = None  # what was chosen or first detected
     offset: float = 0.0
     segments: list[Segment] = field(default_factory=list)
 
@@ -98,7 +139,7 @@ def _transcribe_groq(audio: Path, duration: float, model: str, done: _Done,
                         model=model,
                         response_format="verbose_json",
                         timestamp_granularities=["word", "segment"],
-                        language=done.language,
+                        language=done.requested,
                         temperature=0.0,
                     )
             except groq.AuthenticationError as e:
@@ -114,7 +155,8 @@ def _transcribe_groq(audio: Path, duration: float, model: str, done: _Done,
             limits.record("groq", model, raw.headers)
             result = raw.parse()
 
-            done.language = done.language or _field(result, "language")
+            detected = _field(result, "language")
+            done.language = done.language or language_code(detected) or detected
             done.segments.extend(_groq_segments(result, offset))
             done.offset = offset + length
             on_progress(min(done.offset / duration, 1.0))
@@ -160,7 +202,7 @@ def _transcribe_local(audio: Path, duration: float, done: _Done, on_progress: Ca
             run([FFMPEG, "-y", "-v", "error", "-ss", f"{offset:.3f}", "-i", str(audio), "-ac", "1", "-ar", "16000",
                  str(source)])
         segments_iter, info = _model().transcribe(
-            str(source), language=done.language, word_timestamps=True, vad_filter=True
+            str(source), language=done.requested, word_timestamps=True, vad_filter=True
         )
         for seg in segments_iter:
             cancel.check()
@@ -173,5 +215,5 @@ def _transcribe_local(audio: Path, duration: float, done: _Done, on_progress: Ca
                                          words=words))
             if duration > 0:
                 on_progress(min((seg.end + offset) / duration, 1.0))
-    done.language = done.language or info.language
+    done.language = done.language or language_code(info.language) or info.language
     done.offset = duration
