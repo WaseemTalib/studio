@@ -20,6 +20,8 @@ from pydantic import ValidationError
 
 from . import db, presets, tts
 from .config import MUSIC_DIR, PROJECTS_DIR, VIDEOS_DIR, VOICE_DIR
+from .director import assemble as director_assemble, models as director_models, plan as director_plan, \
+    styles as director_styles
 from .maker import footage, make, music, script, shots, uploads
 from .pipeline import limits, media, render, runner
 from .pipeline.highlights import HighlightError, default_service, highlight_options
@@ -632,3 +634,145 @@ def maker_music_add(body: MusicTrack) -> dict:
         raise HTTPException(422, str(e)) from e
     return {"name": name, "library": music.library(make.media_url)}
 
+
+# --- Stickman Director -------------------------------------------------------------------------------
+
+
+def _plan_live(plan: dict | None) -> dict | None:
+    return None if plan is None else {**plan, **runner.live_status(plan["id"])}
+
+
+def _plan_or_404(pid: str) -> dict:
+    plan = db.get_plan(pid)
+    if plan is None:
+        raise HTTPException(404, "Plan not found")
+    return plan
+
+
+def _plan_idle(plan: dict) -> None:
+    if plan["status"] in ("queued", "processing"):
+        raise HTTPException(409, "This plan is still being written")
+
+
+@app.get("/api/director/options")
+def director_options() -> dict:
+    return {"styles": director_styles.public(), "max_seconds": director_models.MAX_SECONDS}
+
+
+@app.get("/api/director/plans")
+def director_plans() -> list[dict]:
+    return [{**p, **runner.live_status(p["id"])} for p in db.list_plans()]
+
+
+@app.post("/api/director/plans", status_code=201)
+def director_create(body: director_models.DirectorSettings) -> dict:
+    """Start a plan: the director's proposal (Phase A) is written first, for review."""
+    pid = db.new_id()
+    title = (body.source.strip().splitlines() or [body.url or "Untitled"])[0][:80] or "Untitled"
+    db.create_plan(pid, title, body.model_dump())
+    director_plan.submit(pid, "proposal")
+    return _plan_live(db.get_plan(pid))
+
+
+@app.get("/api/director/plans/{pid}")
+def director_get(pid: str) -> dict:
+    return _plan_live(_plan_or_404(pid))
+
+
+@app.post("/api/director/plans/{pid}/revise")
+def director_revise(pid: str, body: director_models.Revision) -> dict:
+    """Recompose the proposal (whole, one clip, or with new global settings). Approval and prompts are
+    invalidated, as in the skill."""
+    plan = _plan_or_404(pid)
+    _plan_idle(plan)
+    if body.clip and (not plan["proposal"] or body.clip > len(plan["proposal"]["clips"])):
+        raise HTTPException(422, "No such clip in this proposal")
+    fields: dict = {"status": "queued", "step": "proposal", "stage": None, "progress": 0, "error": None,
+                    "approved": False, "package": None,
+                    "revision": {"feedback": body.feedback, "clip": None if body.settings else body.clip}}
+    if body.settings:
+        fields["settings"] = body.settings.model_dump()
+    db.update_plan(pid, **fields)
+    director_plan.submit(pid, "proposal")
+    return _plan_live(db.get_plan(pid))
+
+
+@app.post("/api/director/plans/{pid}/approve")
+def director_approve(pid: str) -> dict:
+    """Approve the current proposal and write the production prompts (Phase B)."""
+    plan = _plan_or_404(pid)
+    _plan_idle(plan)
+    if not plan["proposal"]:
+        raise HTTPException(409, "There is no proposal to approve yet")
+    db.update_plan(pid, status="queued", step="prompts", stage=None, progress=0, error=None, approved=True,
+                   revision=None)
+    director_plan.submit(pid, "prompts")
+    return _plan_live(db.get_plan(pid))
+
+
+@app.post("/api/director/plans/{pid}/clips/{clip}/rewrite")
+def director_rewrite_clip(pid: str, clip: int, body: director_models.Revision) -> dict:
+    """Rewrite one clip's production prompt (Phase B) with feedback, keeping the others."""
+    plan = _plan_or_404(pid)
+    _plan_idle(plan)
+    if not plan["approved"] or not plan["package"]:
+        raise HTTPException(409, "Approve the proposal and write the prompts first")
+    if not 1 <= clip <= len(plan["proposal"]["clips"]):
+        raise HTTPException(422, "No such clip")
+    db.update_plan(pid, status="queued", step="prompts", stage=None, progress=0, error=None,
+                   revision={"feedback": body.feedback, "clip": clip})
+    director_plan.submit(pid, "prompts")
+    return _plan_live(db.get_plan(pid))
+
+
+@app.post("/api/director/plans/{pid}/cancel")
+def director_cancel(pid: str) -> dict:
+    plan = _plan_or_404(pid)
+    if plan["status"] not in ("queued", "processing"):
+        raise HTTPException(409, "Nothing is being written for this plan")
+    if not runner.cancel_project(pid):
+        db.update_plan(pid, status="cancelled", stage=None, error=None)
+    return _plan_live(db.get_plan(pid))
+
+
+@app.post("/api/director/plans/{pid}/retry")
+def director_retry(pid: str) -> dict:
+    plan = _plan_or_404(pid)
+    _plan_idle(plan)
+    db.update_plan(pid, status="queued", stage=None, progress=0, error=None)
+    director_plan.submit(pid, plan["step"])
+    return _plan_live(db.get_plan(pid))
+
+
+@app.post("/api/director/plans/{pid}/limit-choice")
+def director_limit_choice(pid: str, body: LimitChoice) -> dict:
+    _plan_or_404(pid)
+    try:
+        runner.choose_on_limit(pid, body.action, body.option)
+    except ValueError as e:
+        raise HTTPException(409, str(e)) from e
+    return _plan_live(db.get_plan(pid))
+
+
+@app.delete("/api/director/plans/{pid}", status_code=204)
+def director_delete(pid: str) -> None:
+    _plan_idle(_plan_or_404(pid))
+    db.delete_plan(pid)
+
+
+@app.get("/api/director/plans/{pid}/export.md")
+def director_export_md(pid: str) -> Response:
+    plan = _plan_or_404(pid)
+    name = _safe_name(plan["title"], "stickman plan")
+    return Response(director_assemble.markdown(plan), media_type="text/markdown; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{name}.md"'})
+
+
+@app.get("/api/director/plans/{pid}/subtitles.srt")
+def director_export_srt(pid: str) -> Response:
+    plan = _plan_or_404(pid)
+    if not plan["proposal"]:
+        raise HTTPException(404, "No proposal yet")
+    name = _safe_name(plan["title"], "stickman plan")
+    return Response(director_assemble.srt(plan["proposal"]), media_type="application/x-subrip; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{name}.srt"'})

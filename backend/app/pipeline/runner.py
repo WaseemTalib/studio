@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 
 # Whisper and ffmpeg are CPU-heavy; process one project at a time.
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="pipeline")
+_light_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="light-jobs")
 
 SOURCE_NAME = re.compile(r"source\.(mp4|mov|m4v|mkv|webm|avi)")
 
@@ -202,13 +203,14 @@ def submit(pid: str, source_url: str | None) -> None:
 
 
 def submit_job(jid: str, process: Callable[[], Any], stages: dict[str, tuple[float, float]],
-               record: Callable[..., None]) -> None:
-    """Queue a job (a project, or a video from the video maker) on the shared worker. `record(jid, **fields)`
-    saves its status; process() reports progress through stage()."""
+               record: Callable[..., None], light: bool = False) -> None:
+    """Queue a job (a project, a video-maker video, a stickman plan) on the shared worker. `record(jid, **fields)`
+    saves its status; process() reports progress through stage(). Light jobs (AI requests only, no
+    rendering) run on their own small pool so they never wait behind a render."""
     active = _Active(stages=stages, record=record)
     with _active_lock:
         _active[jid] = active
-    _executor.submit(_run, jid, process, active)
+    (_light_executor if light else _executor).submit(_run, jid, process, active)
 
 
 def cancel_project(pid: str) -> bool:

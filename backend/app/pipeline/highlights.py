@@ -149,7 +149,7 @@ def _find(window: list[Sentence], transcript: Transcript, options: ProjectOption
     def ask(part: list[Sentence]) -> list[Candidate]:
         # Each part gets its share of the clips, plus one spare; _normalize drops overlaps later.
         n = min(wanted, math.ceil(wanted * len(part) / len(window)) + 1)
-        return _structured(FIND_SYSTEM, prompt(part, n), CandidateSet, options.clip_model, options.ai_service).clips
+        return structured(FIND_SYSTEM, prompt(part, n), CandidateSet, options.clip_model, options.ai_service).clips
 
     budget = _line_budget(FIND_SYSTEM, prompt([], wanted), CandidateSet)
     parts = _split_window(window, budget, options.max_seconds)
@@ -259,7 +259,7 @@ def _review(candidates: list[Candidate], sentences: list[Sentence], window: list
 
     def ask(batch: list[str]) -> list[Review]:
         try:
-            return _structured(REVIEW_SYSTEM, header + "\n\n".join(batch), ReviewSet, options.clip_model,
+            return structured(REVIEW_SYSTEM, header + "\n\n".join(batch), ReviewSet, options.clip_model,
                                options.ai_service).reviews
         except RequestTooLarge:
             if len(batch) > 1:
@@ -333,16 +333,18 @@ def _default_choice(clip_model: str) -> str:
     return choices[LLM_PROVIDER]
 
 
-def _structured(system: str, prompt: str, schema: type[T], clip_model: str = "quality",
-                service: str | None = None) -> T:
-    choice = limits.override("highlights") or service or _default_choice(clip_model)
+def structured(system: str, prompt: str, schema: type[T], clip_model: str = "quality",
+               service: str | None = None, stage: str = "highlights") -> T:
+    """One structured answer from the chosen (or default) service. Usage limits are waited out or
+    put to the user through the job's limit dialog, for `stage`."""
+    choice = limits.override(stage) or service or _default_choice(clip_model)
     while True:
         service, _, model = choice.partition(":")
         try:
             return _SERVICES[service](system, prompt, schema, model)
         except limits.LimitReached as e:
             try:
-                choice = limits.handle("highlights", e.limit, highlight_options(choice)) or choice
+                choice = limits.handle(stage, e.limit, highlight_options(choice)) or choice
             except limits.LimitReached as again:  # no project to ask (e.g. a test run)
                 raise HighlightError(str(again)) from again
 

@@ -96,6 +96,25 @@ CREATE TABLE IF NOT EXISTS videos (
 );
 """
 
+PLANS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS director_plans (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    settings TEXT NOT NULL,             -- JSON DirectorSettings
+    status TEXT NOT NULL,               -- queued | processing | done | failed | cancelled (the current job)
+    step TEXT NOT NULL,                 -- proposal | prompts: what the current or last job writes
+    stage TEXT,
+    progress REAL NOT NULL DEFAULT 0,
+    error TEXT,
+    proposal TEXT,                      -- JSON director's proposal (Phase A)
+    approved INTEGER NOT NULL DEFAULT 0,
+    package TEXT,                       -- JSON production package (Phase B)
+    revision TEXT,                      -- JSON revision the running job applies
+    created_at REAL NOT NULL,
+    updated_at REAL NOT NULL
+);
+"""
+
 # Columns added after the first release, applied to existing databases on startup.
 CLIP_MIGRATIONS = {
     "topic": "TEXT NOT NULL DEFAULT ''",
@@ -128,6 +147,7 @@ def init() -> None:
         conn.executescript(TEMPLATES_SCHEMA)
         conn.executescript(TTS_SCHEMA)
         conn.executescript(VIDEOS_SCHEMA)
+        conn.executescript(PLANS_SCHEMA)
         clip_columns = {r["name"] for r in conn.execute("PRAGMA table_info(clips)")}
         for name, decl in CLIP_MIGRATIONS.items():
             if name not in clip_columns:
@@ -141,6 +161,11 @@ def init() -> None:
         )
         conn.execute(
             "UPDATE videos SET status='failed', error='Interrupted by server restart', updated_at=? "
+            "WHERE status IN ('queued', 'processing')",
+            (time.time(),),
+        )
+        conn.execute(
+            "UPDATE director_plans SET status='failed', error='Interrupted by server restart', updated_at=? "
             "WHERE status IN ('queued', 'processing')",
             (time.time(),),
         )
@@ -360,3 +385,54 @@ def delete_video(vid: str) -> bool:
     with connect() as conn:
         return conn.execute("DELETE FROM videos WHERE id = ?", (vid,)).rowcount > 0
 
+
+# --- Stickman Director ------------------------------------------------------------------------
+
+_PLAN_JSON = ("settings", "proposal", "package", "revision")
+
+
+def _plan(row: sqlite3.Row) -> dict[str, Any]:
+    d = dict(row)
+    for k in _PLAN_JSON:
+        d[k] = json.loads(d[k]) if d[k] else None
+    d["approved"] = bool(d["approved"])
+    return d
+
+
+def create_plan(pid: str, title: str, settings: dict) -> None:
+    now = time.time()
+    with connect() as conn:
+        conn.execute("INSERT INTO director_plans (id, title, settings, status, step, created_at, updated_at) "
+                     "VALUES (?, ?, ?, 'queued', 'proposal', ?, ?)", (pid, title, json.dumps(settings), now, now))
+
+
+def update_plan(pid: str, **fields: Any) -> None:
+    for k in _PLAN_JSON:
+        if k in fields and fields[k] is not None:
+            fields[k] = json.dumps(fields[k])
+    if "approved" in fields:
+        fields["approved"] = int(bool(fields["approved"]))
+    fields["updated_at"] = time.time()
+    cols = ", ".join(f"{k} = ?" for k in fields)
+    with connect() as conn:
+        conn.execute(f"UPDATE director_plans SET {cols} WHERE id = ?", (*fields.values(), pid))
+
+
+def get_plan(pid: str) -> dict[str, Any] | None:
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM director_plans WHERE id = ?", (pid,)).fetchone()
+        return _plan(row) if row else None
+
+
+def list_plans() -> list[dict[str, Any]]:
+    with connect() as conn:
+        rows = conn.execute("SELECT id, title, settings, status, step, stage, progress, error, approved, "
+                            "package IS NOT NULL AS has_package, created_at, updated_at FROM director_plans "
+                            "ORDER BY updated_at DESC").fetchall()
+        return [{**dict(r), "settings": json.loads(r["settings"]), "approved": bool(r["approved"]),
+                 "has_package": bool(r["has_package"])} for r in rows]
+
+
+def delete_plan(pid: str) -> bool:
+    with connect() as conn:
+        return conn.execute("DELETE FROM director_plans WHERE id = ?", (pid,)).rowcount > 0

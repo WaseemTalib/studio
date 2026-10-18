@@ -112,6 +112,27 @@ both pages; **Default** uses `SHORTCUT_LLM_PROVIDER`.
 
 Videos are saved in `backend/data/videos/`, uploaded music in `backend/data/videos/music/`.
 
+## Stickman Director
+
+**Stickman Director** (top navigation, `/stickman`) brings the
+[Stickman Video Director](https://github.com/kaomei/stickman-video-director) skill (MIT; licence in
+`backend/app/director/LICENSE`) into the app. Give a topic, script or article (or link), an aspect ratio
+(16:9 / 9:16), a length in ten-second clips (30 s to 5 min) and one of six styles: Classic Minimalist light/dark,
+Modern Studio Tech, Cinematic Story, Prehistoric Dark Comedy or Cozy Storytelling.
+
+1. **Director's proposal**: titles, hook, a complete narrator voice profile, palette, music, emotional arc, cast
+   cards (prehistoric style) and a storyboard of N ten-second clips following the 5-stage "heartbeat" structure,
+   each with three timed beats, visual devices, camera/transition, English VO plus a reference translation in your
+   language, BGM/SFX and the state handed to the next clip. Revise the whole proposal, one clip, or the global
+   settings (which recomposes it and clears approval).
+2. **Production prompts** after approval: a global continuity block, N standalone Google Flow (Omni Flash) prompts
+   in the skill's 12-part order, a stitching guide and voice/music notes. The character anchors, voice block, music
+   lock and negative constraints are inserted verbatim by code, so every clip carries identical locks. Rewrite any
+   single prompt with feedback. The skill's checklists run on both phases.
+3. **Export**: the whole plan as Markdown and English subtitles as `.srt` for editing.
+
+Generating the clips happens in Google Flow; the app plans and writes the prompts.
+
 ## Configuration (environment)
 
 Put keys and settings in `backend/.env` (start from `backend/.env.example`; the file is ignored by git), or

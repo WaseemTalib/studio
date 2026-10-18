@@ -5,6 +5,7 @@ import './index.css'
 import ClipEditor from './pages/ClipEditor'
 import Dashboard from './pages/Dashboard'
 import ProjectPage from './pages/ProjectPage'
+import StickmanDirector from './pages/StickmanDirector'
 import VideoMaker from './pages/VideoMaker'
 import VoiceStudio from './pages/VoiceStudio'
 
@@ -20,6 +21,7 @@ createRoot(document.getElementById('root')!).render(
             <NavLink to="/" end>Projects</NavLink>
             <NavLink to="/voice-studio">Voice Studio</NavLink>
             <NavLink to="/video-maker">Video Maker</NavLink>
+            <NavLink to="/stickman">Stickman Director</NavLink>
           </nav>
           <a href="/#new" className="button primary small-btn">+ New project</a>
         </div>
@@ -31,6 +33,7 @@ createRoot(document.getElementById('root')!).render(
           <Route path="/clips/:id" element={<ClipEditor />} />
           <Route path="/voice-studio" element={<VoiceStudio />} />
           <Route path="/video-maker" element={<VideoMaker />} />
+          <Route path="/stickman" element={<StickmanDirector />} />
         </Routes>
       </main>
     </BrowserRouter>
