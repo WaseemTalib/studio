@@ -13,6 +13,10 @@ export interface LookOptions {
   caption_position: Position
   highlight_color: string
   words_per_line: number
+  /** Font size in percent of the caption style's own (50–200). */
+  caption_size: number
+  /** Nudge from the caption position in percent of the frame height (-30–30); negative moves up. */
+  caption_offset: number
   title_overlay: boolean
   auto_zoom: boolean
   resolution: Resolution
@@ -30,6 +34,14 @@ export interface ProjectOptions extends LookOptions {
   range_start: number | null
   range_end: number | null
   language: string | null
+  /** AI model that finds the highlights ("service:model"); null uses the default. */
+  ai_service: string | null
+}
+
+export interface AIServices {
+  services: LimitOption[]
+  /** "service:model" used when none is chosen. */
+  default: string | null
 }
 
 export interface Word {
@@ -68,13 +80,16 @@ export interface Presets {
   clip_lengths: { id: string; label: string; min_seconds: number; max_seconds: number }[]
 }
 
-export function captionPreviewUrl(o: Pick<LookOptions, 'caption_style' | 'highlight_color' | 'caption_position' | 'aspect' | 'title_overlay'>) {
+export function captionPreviewUrl(o: Pick<LookOptions, 'caption_style' | 'highlight_color' | 'caption_position' | 'aspect' | 'title_overlay'>
+  & Partial<Pick<LookOptions, 'caption_size' | 'caption_offset'>>) {
   const q = new URLSearchParams({
     style: o.caption_style,
     color: o.highlight_color,
     position: o.caption_position,
     aspect: o.aspect,
     title: String(o.title_overlay),
+    size: String(o.caption_size ?? 100),
+    offset: String(o.caption_offset ?? 0),
   })
   return `/api/caption-preview.png?${q}`
 }
@@ -214,6 +229,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   presets: () => request<Presets>('/api/presets'),
+  aiServices: () => request<AIServices>('/api/ai-services'),
   listProjects: () => request<Project[]>('/api/projects'),
   getProject: (id: string) => request<Project>(`/api/projects/${id}`),
   listClips: (id: string) => request<Clip[]>(`/api/projects/${id}/clips`),

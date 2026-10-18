@@ -11,6 +11,8 @@ import {
   type SourceInfo,
   type Template,
 } from '../api'
+import { rememberedService, useAIServices } from '../aiServices'
+import AIModelSelect from './AIModelSelect'
 import LookControls, { LAYOUT_LABEL } from './LookControls'
 
 const DEFAULTS: ProjectOptions = {
@@ -25,12 +27,15 @@ const DEFAULTS: ProjectOptions = {
   range_start: null,
   range_end: null,
   language: null,
+  ai_service: null,
   aspect: '9:16',
   layout: 'auto',
   caption_style: 'karaoke',
   caption_position: 'bottom',
   highlight_color: '#04f827',  // Karaoke's own green
   words_per_line: 3,
+  caption_size: 100,
+  caption_offset: 0,
   title_overlay: false,
   auto_zoom: false,
   resolution: '1080p',
@@ -56,7 +61,8 @@ export default function NewProject({ onCreated, onSourceChange }: {
   const [projectName, setProjectName] = useState('')
   const [nameEdited, setNameEdited] = useState(false)
   const [infoState, setInfoState] = useState<'idle' | 'loading' | 'error'>('idle')
-  const [options, setOptions] = useState<ProjectOptions>(DEFAULTS)
+  const [options, setOptions] = useState<ProjectOptions>(() => ({ ...DEFAULTS, ai_service: rememberedService() }))
+  const aiServices = useAIServices()
   const [lengthId, setLengthId] = useState('auto')
   const [topicDraft, setTopicDraft] = useState('')
   const [range, setRange] = useState<[number, number] | null>(null)
@@ -82,7 +88,7 @@ export default function NewProject({ onCreated, onSourceChange }: {
     setOptions((o) => ({ ...o, [key]: value }))
 
   function applyTemplate(t: Template) {
-    setOptions((o) => ({ ...DEFAULTS, ...t.options, range_start: o.range_start, range_end: o.range_end }))
+    setOptions((o) => ({ ...DEFAULTS, ai_service: o.ai_service, ...t.options, range_start: o.range_start, range_end: o.range_end }))
     const match = presets?.clip_lengths.find(
       (l) => l.min_seconds === t.options.min_seconds && l.max_seconds === t.options.max_seconds)
     setLengthId(match?.id ?? 'custom')
@@ -331,13 +337,8 @@ export default function NewProject({ onCreated, onSourceChange }: {
               {options.mode === 'clip' && (
                 <>
                   <div className="row">
-                    <label className="field">
-                      <span>Clip model</span>
-                      <select value={options.clip_model} onChange={(e) => set('clip_model', e.target.value as 'fast' | 'quality')}>
-                        <option value="quality">Best quality</option>
-                        <option value="fast">Fast</option>
-                      </select>
-                    </label>
+                    <AIModelSelect services={aiServices} value={options.ai_service}
+                      onChange={(v) => setOptions((o) => ({ ...o, ai_service: v, clip_model: v?.endsWith('-20b') ? 'fast' : 'quality' }))} />
                     <label className="field">
                       <span>Genre</span>
                       <select value={options.genre} onChange={(e) => set('genre', e.target.value)}>

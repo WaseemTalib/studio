@@ -359,3 +359,4 @@ def list_videos() -> list[dict[str, Any]]:
 def delete_video(vid: str) -> bool:
     with connect() as conn:
         return conn.execute("DELETE FROM videos WHERE id = ?", (vid,)).rowcount > 0
+

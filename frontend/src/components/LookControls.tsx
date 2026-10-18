@@ -103,7 +103,7 @@ export default function LookControls({ value, onChange, presets, sections = ['ca
                           onClick={() => onChange({ ...value, caption_style: s.id, highlight_color: s.highlight })}>
                           {/* Each tile shows its own colours; the selected one shows the colour in use. */}
                           <img src={captionPreviewUrl({
-                            ...value, caption_style: s.id, aspect: '9:16', title_overlay: false,
+                            ...value, caption_style: s.id, aspect: '9:16', title_overlay: false, caption_size: 100, caption_offset: 0,
                             highlight_color: selected ? value.highlight_color : s.highlight,
                           })} alt="" loading="lazy" />
                           <span>{s.label}{s.animated && <em className="anim-badge">animated</em>}</span>
@@ -141,6 +141,27 @@ export default function LookControls({ value, onChange, presets, sections = ['ca
                 {[1, 2, 3, 4, 5, 6].map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             </label>
+          </div>
+          <div className="row">
+            <label className="field grow-field">
+              <span>Caption size: {value.caption_size}%</span>
+              <input type="range" min={50} max={200} step={5} value={value.caption_size}
+                onChange={(e) => set('caption_size', Number(e.target.value))} />
+            </label>
+            <label className="field grow-field">
+              <span>
+                Move {value.caption_offset < 0 ? `up ${-value.caption_offset}%` : value.caption_offset > 0 ? `down ${value.caption_offset}%` : 'up or down'}
+              </span>
+              <span className="nudge">
+                <span className="muted small">↑ Up</span>
+                <input type="range" min={-30} max={30} step={1} value={value.caption_offset} aria-label="Move captions up or down"
+                  onChange={(e) => set('caption_offset', Number(e.target.value))} />
+                <span className="muted small">Down ↓</span>
+              </span>
+            </label>
+            {(value.caption_size !== 100 || value.caption_offset !== 0) && (
+              <button type="button" className="link align-end" onClick={() => onChange({ ...value, caption_size: 100, caption_offset: 0 })}>Reset</button>
+            )}
           </div>
         </>
       )}

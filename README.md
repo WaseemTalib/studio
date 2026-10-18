@@ -20,7 +20,7 @@ burned-in captions) → clip library with virality score, hook, reasoning, hasht
 cd backend
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 cp .env.example .env                 # then add GROQ_API_KEY to .env
-.venv/bin/uvicorn app.main:app --reload
+.venv/bin/uvicorn app.main:app --reload --timeout-graceful-shutdown 3
 
 # Frontend (http://localhost:5173), in another terminal
 cd frontend
@@ -71,6 +71,13 @@ page: a text editor, voice and model settings, a history of everything you gener
 
 Generated audio is saved in `backend/data/voice/`.
 
+## AI model
+
+Highlights (New project → **AI model**) and Video Maker scripts and footage checks (**AI model** in step 1) can
+use Groq (gpt-oss-120b or the faster 20b), Google Gemini Flash, OpenRouter or SambaNova, each on its free tier.
+Services without a key in `backend/.env` are greyed out. The last choice is remembered in the browser and shared by
+both pages; **Default** uses `SHORTCUT_LLM_PROVIDER`.
+
 ## Video Maker
 
 **Video Maker** (top navigation, `/video-maker`) makes long narrated videos, inspired by
@@ -84,10 +91,24 @@ Generated audio is saved in `backend/data/voice/`.
    If the service hits a usage limit, you choose to wait (it retries when the limit frees up) or switch.
 3. **Voice**: Kokoro on this computer (free) or ElevenLabs. Narration is kept per scene, so a retry or remake does
    not record it again.
-4. **Footage**: clips from Pexels and/or Pixabay (free keys), matched to each scene; ffmpeg reads only the seconds
-   it needs. Without a key, choose a plain coloured background. Credits for the clips used are listed per video.
+4. **Footage**: tick any of Pixabay, Pexels, Coverr (free keys), Wikimedia Commons real-world and news video
+   (no key; graphic titles are filtered out) and Unsplash photos (free key, shown with a slow zoom); ffmpeg reads
+   only the seconds it needs. The footage review can also use **your own clips and images** (My uploads). A clip is used
+   only when its site's description matches the scene's search (animation, cartoons, green screen and AI clips are
+   left out), and an AI check of those descriptions against the narration drops off-topic ones. Searches are taken
+   in the order the narration mentions things, so each shot matches what is being said. **Find footage** shows
+   every scene's shots before rendering: hover to preview, click to swap, search Pexels/Pixabay or photos, add or
+   remove shots. Scenes can also open with a **fact card** or **quote card** (quotes are kept only when they appear
+   word for word in your source) and show a free-licensed **photo of a named place** from Wikimedia Commons.
+   Without a stock key, choose a plain coloured background. Credits (and photo licences) are listed per video.
 5. **Captions**: every caption style from the clipper, timed by Whisper on the narration and showing the script's own
-   words. **Music**: upload tracks you have the rights to; they loop under the narration and fade out.
+   words.
+6. **Music**: no music, a track from your library, a random library track, or **Match the script** (the AI
+   suggests a mood and a matching track is found when the video is made). **Find free music** searches Jamendo
+   (`JAMENDO_CLIENT_ID`) or Wikimedia Commons for Creative Commons tracks that allow commercial use; preview them
+   and **Add & use**. Their artist and licence go into the video's credits. You can also upload tracks you have
+   the rights to. Music loops under the narration and fades out. Commons asks apps for a contact before allowing
+   whole-file downloads: set `SHORTCUT_CONTACT` (your email or website).
 
 Videos are saved in `backend/data/videos/`, uploaded music in `backend/data/videos/music/`.
 
@@ -107,6 +128,10 @@ export them in your shell, which takes precedence. Restart the backend after cha
 | `ELEVENLABS_API_KEY` | unset | Enables ElevenLabs in Voice Studio |
 | `PEXELS_API_KEY` | unset | Pexels stock footage in Video Maker (free at pexels.com/api) |
 | `PIXABAY_API_KEY` | unset | Pixabay stock footage in Video Maker (free at pixabay.com/api/docs) |
+| `COVERR_API_KEY` | unset | Coverr stock video in Video Maker (email team@coverr.co for a key) |
+| `UNSPLASH_ACCESS_KEY` | unset | Unsplash photos in Video Maker (unsplash.com/developers) |
+| `JAMENDO_CLIENT_ID` | unset | Jamendo music search in Video Maker (free at devportal.jamendo.com) |
+| `SHORTCUT_CONTACT` | unset | Your email or website, sent to Wikimedia Commons (and stock sites) as their API policy asks |
 | `SHORTCUT_KOKORO_MODEL` | `kokoro-v1.0.onnx` | Local voice model file (`kokoro-v1.0.int8.onnx` is smaller but slower on Apple Silicon) |
 | `SHORTCUT_WHISPER_MODEL` | `small` | Local model: `tiny`, `base`, `small`, `medium`, `large-v3` |
 | `SHORTCUT_WHISPER_DEVICE` | `auto` | `cpu`, `cuda`, or `auto` |

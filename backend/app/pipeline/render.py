@@ -54,6 +54,9 @@ its it's just like me my no not of on or our she so than that that's the their t
 too up us was we were what when which who will with would you your i'm you're we're they're don't can't
 """.split())
 
+MAX_SCALED_LINES = 3     # lines a caption may wrap onto when its size is turned up
+MAX_CAPTION_HEIGHT = 0.6   # share of the frame height a caption may cover
+
 ZOOM_LEVEL = 1.14
 MAX_ZOOM_INTERVALS = 60
 
@@ -113,6 +116,8 @@ class Look:
     position: str
     highlight: str
     title: str | None
+    scale: float = 1.0    # caption font size relative to the style's own
+    offset: float = 0.0   # nudge from the position, as a fraction of the frame height; negative is up
 
     def highlight_for(self, alt: bool) -> str:
         """Alternate captions switch to the style's second colour, unless the user picked their own."""
@@ -233,30 +238,40 @@ def _caption_layer(size: tuple[int, int], words: list[str], active: int | None, 
     def scale_of(i: int) -> float:
         return style.active_scale if i in enlarged else 1.0
 
-    # Wrap onto up to max_lines lines of max_width; shrink the font until it fits.
-    size_px = int(width * style.size)
+    def fit(size_px: int, max_lines: int):
+        """Wrap onto up to max_lines lines of max_width; shrink the font until it fits."""
+        while True:
+            font = _font(style.font, size_px)
+            fonts = [_font(style.font, int(size_px * scale_of(i))) for i in range(len(words))]
+            # Condensed fonts have tiny spaces; boxes and shadows need room between words.
+            space = max(draw.textlength(" ", font=font), size_px * 0.26)
+            if style.active == "box":
+                space += size_px * 0.2
+            if style.shadow == "hard":
+                space += size_px * 0.08
+            space += size_px * (style.active_scale - 1)
+            widths = [draw.textlength(w, font=f) for w, f in zip(words, fonts)]
+            lines = _wrap_indices(widths, space, max_width)
+            totals = [sum(widths[i] for i in line) + space * (len(line) - 1) for line in lines]
+            ascent, descent = font.getmetrics()
+            tall = (ascent + descent) * len(lines) > height * MAX_CAPTION_HEIGHT
+            if (len(lines) <= max_lines and max(totals) <= max_width and not tall) or size_px <= 24:
+                return font, fonts, space, widths, lines, totals
+            size_px -= 4
+
     max_width = width * style.max_width
-    while True:
-        font = _font(style.font, size_px)
-        fonts = [_font(style.font, int(size_px * scale_of(i))) for i in range(len(words))]
-        # Condensed fonts have tiny spaces; boxes and shadows need room between words.
-        space = max(draw.textlength(" ", font=font), size_px * 0.26)
-        if style.active == "box":
-            space += size_px * 0.2
-        if style.shadow == "hard":
-            space += size_px * 0.08
-        space += size_px * (style.active_scale - 1)
-        widths = [draw.textlength(w, font=f) for w, f in zip(words, fonts)]
-        lines = _wrap_indices(widths, space, max_width)
-        totals = [sum(widths[i] for i in line) + space * (len(line) - 1) for line in lines]
-        if (len(lines) <= style.max_lines and max(totals) <= max_width) or size_px <= 24:
-            break
-        size_px -= 4
+    font, fonts, space, widths, lines, totals = fit(int(width * style.size), style.max_lines)
+    if look.scale != 1.0:
+        # The chosen size scales the size the style would show; larger text may wrap onto extra lines.
+        font, fonts, space, widths, lines, totals = fit(max(24, int(font.size * look.scale)),
+                                                        max(style.max_lines, MAX_SCALED_LINES))
 
     ascent, descent = font.getmetrics()
     line_h = int((ascent + descent) * 0.95)
-    center_y = int(height * POSITION_Y[look.position])
+    center_y = int(height * (POSITION_Y[look.position] + look.offset))
     top = center_y - (line_h * (len(lines) - 1) + ascent) // 2
+    block_h = line_h * (len(lines) - 1) + ascent + descent
+    top = max(int(height * 0.03), min(top, int(height * 0.97) - block_h))  # never pushed out of the frame
     if phase is not None and style.animation == "rise":
         top += int(font.size * RISE_OFFSETS[phase])
     pad = font.size // 5
@@ -347,7 +362,7 @@ def _title_layer(size: tuple[int, int], look: Look, phase: int | None) -> Image.
     line_h = ascent + descent + gap
     top = int(height * (0.08 if look.position != "top" else 0.04))
     if look.position == "top":
-        top = int(height * POSITION_Y["top"] + font.size * 1.4)  # below the captions
+        top = int(height * (POSITION_Y["top"] + look.offset) + font.size * 1.4)  # below the captions
 
     for n, line in enumerate(lines):
         tw = draw.textlength(line, font=font)
@@ -609,7 +624,8 @@ def _write_overlay_track(words: list[Word], start: float, end: float, look: Look
 
 def look_for(options: LookOptions, title: str | None) -> Look:
     style = None if options.caption_style == NO_CAPTIONS else CAPTION_STYLES[options.caption_style]
-    return Look(style, options.caption_position, options.highlight_color, title if options.title_overlay else None)
+    return Look(style, options.caption_position, options.highlight_color, title if options.title_overlay else None,
+                options.caption_size / 100, options.caption_offset / 100)
 
 
 # --- Reframing ------------------------------------------------------------------
@@ -876,7 +892,8 @@ def render_clip(src: Path, src_size: tuple[int, int], words: list[Word], start: 
     return layout
 
 
-def preview(style_id: str, highlight: str, position: str, aspect: Aspect, title: str | None) -> Image.Image:
+def preview(style_id: str, highlight: str, position: str, aspect: Aspect, title: str | None,
+            size: int = 100, offset: int = 0) -> Image.Image:
     """Sample frame for the style picker, drawn by the same code as real clips."""
     width, height = output_size(aspect)
     style = None if style_id == NO_CAPTIONS else CAPTION_STYLES[style_id]
@@ -886,7 +903,7 @@ def preview(style_id: str, highlight: str, position: str, aspect: Aspect, title:
     for y in range(height):
         f = y / height
         bg_draw.line([(0, y), (width, y)], fill=tuple(int(a + (b - a) * f) for a, b in zip(top, bottom)) + (255,))
-    look = Look(style, position, highlight, title)
+    look = Look(style, position, highlight, title, size / 100, offset / 100)
     words = ("THIS", "CHANGED", "EVERYTHING")
     # Styles that reveal words show the whole caption; the rest show the middle word being spoken.
     active = len(words) - 1 if style and style.reveal else 1

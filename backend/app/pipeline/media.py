@@ -20,20 +20,27 @@ def run(cmd: list[str], on_line: Callable[[str], None] | None = None) -> str:
     return proc.stdout
 
 
-def probe(path: Path) -> dict:
+def video_info(path: Path) -> dict:
+    """Duration and size of a video, with or without sound; also says whether it has audio."""
     out = run([FFPROBE, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", str(path)])
     data = json.loads(out)
     video = next((s for s in data["streams"] if s.get("codec_type") == "video"), None)
     if video is None:
         raise MediaError("Source has no video stream")
-    has_audio = any(s.get("codec_type") == "audio" for s in data["streams"])
-    if not has_audio:
-        raise MediaError("Source has no audio stream to transcribe")
     return {
         "duration": float(data["format"]["duration"]),
         "width": int(video["width"]),
         "height": int(video["height"]),
+        "audio": any(s.get("codec_type") == "audio" for s in data["streams"]),
     }
+
+
+def probe(path: Path) -> dict:
+    """A source to clip: it needs speech to transcribe."""
+    info = video_info(path)
+    if not info.pop("audio"):
+        raise MediaError("Source has no audio stream to transcribe")
+    return info
 
 
 PROGRESS_PREFIX = "shortcut-progress "

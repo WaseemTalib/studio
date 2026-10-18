@@ -1,9 +1,9 @@
 """API and pipeline data contracts."""
 
 import re
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator, model_validator
 
 from .presets import CAPTION_STYLES, GENRES, NO_CAPTIONS
 
@@ -16,6 +16,8 @@ Resolution = Literal["720p", "1080p", "4k"]
 # clip: AI picks highlights. full: keep the whole video (or timeframe), only caption and reframe.
 Mode = Literal["clip", "full"]
 ClipModel = Literal["fast", "quality"]
+# An AI service and model, "service:model" (e.g. "gemini:auto"); None uses the configured default.
+AIService = Annotated[str, StringConstraints(pattern=r"^(groq|gemini|openrouter|sambanova):\S+$", max_length=200)]
 
 
 class LookOptions(BaseModel):
@@ -27,6 +29,8 @@ class LookOptions(BaseModel):
     caption_position: Position = "bottom"
     highlight_color: str = CAPTION_STYLES["karaoke"].default_highlight
     words_per_line: int = Field(default=3, ge=1, le=6)
+    caption_size: int = Field(default=100, ge=50, le=200)     # percent of the style's font size
+    caption_offset: int = Field(default=0, ge=-30, le=30)     # percent of the frame height; negative moves up
     title_overlay: bool = False
     auto_zoom: bool = False          # alternate gentle punch-in zooms between sentences
     resolution: Resolution = "1080p"
@@ -58,6 +62,7 @@ class ProjectOptions(LookOptions):
     range_start: float | None = Field(default=None, ge=0)
     range_end: float | None = Field(default=None, gt=0)
     language: str | None = None  # None lets Whisper detect it
+    ai_service: AIService | None = None  # finds the highlights; None uses the default (and clip_model)
 
     @field_validator("genre")
     @classmethod
@@ -230,17 +235,33 @@ class AddLibraryVoice(BaseModel):
 # stock footage matched to each scene, captions and optional background music.
 
 SourceKind = Literal["prompt", "description", "script", "news"]
-Footage = Literal["pexels", "pixabay", "both", "none"]
+Footage = Literal["pexels", "pixabay", "both", "none"]  # before several sources could be chosen
+FootageSource = Literal["pixabay", "pexels", "coverr", "commons", "unsplash"]
+
+
+SEARCH_TERMS_HELP = ("4-6 English stock-footage searches of 2-3 words, in the order the narration mentions "
+                     "those things, ending with one broader search")
+CARD_HELP = ("A striking number or fact from this scene to show full screen, max 6 words, e.g. "
+             "'158 YEARS IN PRISON'; empty for most scenes")
+QUOTE_HELP = "An exact quote from the source by a named person, max 25 words; empty unless the source quotes someone"
+QUOTE_BY_HELP = "Who said the quote, e.g. 'Debra Robinson, mother'; empty when there is no quote"
+MUSIC_MOOD_HELP = ("2-4 English words to search for instrumental background music that fits the video, "
+                   "e.g. 'calm ambient piano', 'dark suspense', 'upbeat corporate'")
+PLACE_HELP = ("A real, named place this scene is about, for a photo, e.g. 'Ensenada, Baja California'; "
+              "empty if none")
 
 
 class ScriptScene(BaseModel):
-    """One scene for the script writer: narration plus stock-footage search terms."""
+    """One scene for the script writer: narration, stock-footage searches and optional cards."""
 
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(description="The narration for this scene: 2-4 sentences, spoken word only")
-    search_terms: list[str] = Field(
-        description="2-3 short English stock-footage searches (1-3 words each) for what should be on screen")
+    search_terms: list[str] = Field(description=SEARCH_TERMS_HELP)
+    card_text: str = Field(description=CARD_HELP)
+    quote: str = Field(description=QUOTE_HELP)
+    quote_by: str = Field(description=QUOTE_BY_HELP)
+    place: str = Field(description=PLACE_HELP)
 
 
 class ScriptDraft(BaseModel):
@@ -249,6 +270,7 @@ class ScriptDraft(BaseModel):
     title: str = Field(description="Video title, max ~70 characters")
     description: str = Field(description="One or two sentence video description for YouTube")
     hashtags: list[str] = Field(description="3-6 relevant hashtags without the # symbol")
+    music_mood: str = Field(description=MUSIC_MOOD_HELP)
     scenes: list[ScriptScene]
 
 
@@ -263,7 +285,7 @@ class DraftRequest(BaseModel):
     minutes: float = Field(default=3, ge=0.5, le=20)  # target narration length
     language: str = Field(default="English", min_length=2, max_length=40)
     tone: str = Field(default="", max_length=200)
-    service: str | None = Field(default=None, max_length=200)  # "service:model"; None uses the default
+    service: AIService | None = None  # writes the script; None uses the default
 
     @model_validator(mode="after")
     def _has_input(self) -> "DraftRequest":
@@ -273,11 +295,38 @@ class DraftRequest(BaseModel):
         return self
 
 
+class StockMedia(BaseModel):
+    """A stock clip or photo chosen in the footage review."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    provider: Literal["pexels", "pixabay", "coverr", "commons", "wikimedia", "unsplash", "upload"]
+    id: str = Field(max_length=300)
+    link: str = Field(max_length=2000)
+    width: int
+    height: int
+    duration: float
+    page: str = Field(default="", max_length=2000)
+    author: str = Field(default="", max_length=300)
+    thumb: str = Field(default="", max_length=2000)
+    preview: str = Field(default="", max_length=2000)
+    text: str = Field(default="", max_length=2000)
+    kind: Literal["video", "photo"] = "video"
+    license: str = Field(default="", max_length=100)
+    score: float = 0.0
+    ping: str = Field(default="", max_length=2000)
+
+
 class Scene(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     text: str = Field(min_length=1, max_length=5000)
-    search_terms: list[str] = Field(default_factory=list, max_length=6)
+    search_terms: list[str] = Field(default_factory=list, max_length=8)
+    card_text: str = Field(default="", max_length=80)      # shown full screen at the start of the scene
+    quote: str = Field(default="", max_length=400)         # shown as a quote card
+    quote_by: str = Field(default="", max_length=120)
+    place: str = Field(default="", max_length=120)         # a real place, for a Wikimedia Commons photo
+    clips: list[StockMedia] = Field(default_factory=list, max_length=30)  # chosen in the footage review, in order
 
 
 class VideoVoice(BaseModel):
@@ -304,15 +353,65 @@ class VideoRequest(BaseModel):
     aspect: Aspect = "16:9"
     resolution: Literal["720p", "1080p"] = "1080p"
     footage: Footage = "pexels"
+    sources: list[FootageSource] | None = None  # where footage comes from; None: from `footage`; []: plain
     clip_seconds: float = Field(default=5, ge=2, le=15)  # longest single stock shot
     transition: Literal["cut", "fade"] = "fade"
     caption_style: str = "simple"
     caption_position: Position = "bottom"
     highlight_color: str = CAPTION_STYLES["simple"].default_highlight
     words_per_line: int = Field(default=4, ge=1, le=8)
+    caption_size: int = Field(default=100, ge=50, le=200)
+    caption_offset: int = Field(default=0, ge=-30, le=30)
     title_overlay: bool = False
     music: str | None = Field(default=None, max_length=200)  # file name in the music library
+    # track: `music` (or none); random: any track in the library; auto: a free track matching music_mood
+    music_mode: Literal["track", "random", "auto"] = "track"
+    music_mood: str = Field(default="", max_length=100)
     music_volume: float = Field(default=0.12, ge=0, le=1)
+    cards: bool = True    # fact and quote cards
+    photos: bool = True   # photos of named places from Wikimedia Commons
+    ai_service: AIService | None = None  # checks the footage against the narration; None uses the default
 
     _style = field_validator("caption_style")(LookOptions._style.__func__)
     _color = field_validator("highlight_color")(LookOptions._color.__func__)
+
+
+class FootagePlanRequest(BaseModel):
+    """Find footage for every scene before rendering, for review."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    scenes: list[Scene] = Field(min_length=1, max_length=200)
+    footage: Footage = "pixabay"
+    sources: list[FootageSource] | None = None
+    aspect: Aspect = "16:9"
+    resolution: Literal["720p", "1080p"] = "1080p"
+    clip_seconds: float = Field(default=5, ge=2, le=15)
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+    cards: bool = True
+    photos: bool = True
+    ai_service: AIService | None = None
+    only: int | None = Field(default=None, ge=0)  # just this scene (refresh one)
+
+
+class MusicTrack(BaseModel):
+    """A track found by a music search, to add to the library."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    provider: Literal["jamendo", "commons"]
+    id: str = Field(max_length=300)
+    title: str = Field(default="", max_length=300)
+    author: str = Field(default="", max_length=300)
+    download: str = Field(max_length=2000)
+    page: str = Field(default="", max_length=2000)
+    license: str = Field(default="", max_length=200)
+    license_url: str = Field(default="", max_length=500)
+    ext: str = Field(default=".mp3", max_length=8)
+
+
+def footage_sources(req: "VideoRequest | FootagePlanRequest") -> list[str]:
+    """The footage sources a request asks for (older requests name one in `footage`)."""
+    if req.sources is not None:
+        return list(dict.fromkeys(req.sources))
+    return {"none": [], "both": ["pexels", "pixabay"]}.get(req.footage, [req.footage])

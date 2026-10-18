@@ -9,7 +9,8 @@ import requests
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..pipeline.highlights import HighlightError, ask_once, default_service
-from ..schemas import DraftRequest, ScriptDraft
+from ..schemas import (CARD_HELP, MUSIC_MOOD_HELP, PLACE_HELP, QUOTE_BY_HELP, QUOTE_HELP, SEARCH_TERMS_HELP, DraftRequest,
+                       ScriptDraft)
 
 WORDS_PER_MINUTE = 150      # typical narration pace at speed 1.0
 SCENE_WORDS = 45            # about 18 seconds of narration per scene
@@ -26,9 +27,18 @@ Rules for the narration:
 - Split the narration into scenes of 2-4 sentences, each about one idea, in order.
 
 Rules for search_terms (used to find stock video clips for each scene):
-- 2-3 short English searches of 1-3 words, always in English whatever the narration language.
-- Concrete, filmable things stock libraries have: "city traffic night", "scientist microscope", "ocean waves".
-- Never abstract ideas, people's names, brands, logos or text on screen."""
+- 4-6 English searches of 2-3 words, always in English whatever the narration language, in the order the \
+narration mentions those things, so each shot matches what is being said. End with one broader search \
+(e.g. "courthouse exterior", "city street") as a fallback.
+- Describe what a camera could film: a person or object, doing something, somewhere. Use the words stock \
+sites tag footage with: "judge gavel", "police car night", "prison cell door", "woman crying", "surfer waves".
+- Never search for abstract ideas, documents, charts, maps, timelines, graphics, text, people's names, \
+brands or logos: those cannot be filmed. Use something visual that stands for them instead.
+
+Cards and photos (leave a field empty when it does not apply):
+- card_text: at most one scene in four gets a short striking fact or number shown full screen.
+- quote / quote_by: only words someone is quoted as saying in the source, copied exactly.
+- place: the real city, region or landmark the scene is about, for a photo of it."""
 
 NEWS_RULES = """
 This video reports a news article. Use only facts stated in the article; never add names, numbers, \
@@ -36,17 +46,26 @@ dates, quotes or claims that are not in it. Attribute claims to their source ("a
 Keep a neutral, factual tone."""
 
 TAG_SYSTEM = """You prepare a narration script for a video illustrated with stock footage.
-For each numbered scene, give 2-3 short English stock-footage searches of 1-3 words (always English, whatever \
-the script language): concrete, filmable things such as "city traffic night" or "doctor laptop", never \
-abstract ideas, people's names, brands or text. Also give the video a title, a short description and hashtags \
-in the script's language."""
+For each numbered scene, give 4-6 English stock-footage searches of 2-3 words (always English, whatever the \
+script language), in the order the scene mentions those things, ending with one broader search. Describe what \
+a camera could film, using words stock sites tag footage with ("judge gavel", "police car night", "doctor \
+laptop"); never abstract ideas, documents, charts, maps, graphics, text, people's names, brands or logos.
+Optionally per scene: card_text, a striking fact or number to show full screen (max 6 words, at most one scene \
+in four); quote and quote_by, only words the script quotes someone as saying; place, a real named place the \
+scene is about. Leave them empty otherwise.
+Also give the video a title, a short description and hashtags in the script's language, and a music_mood: \
+2-4 English words to search for fitting instrumental background music."""
 
 
 class SceneTerms(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     scene: int = Field(description="The scene number")
-    search_terms: list[str] = Field(description="2-3 English stock-footage searches of 1-3 words")
+    search_terms: list[str] = Field(description=SEARCH_TERMS_HELP)
+    card_text: str = Field(description=CARD_HELP)
+    quote: str = Field(description=QUOTE_HELP)
+    quote_by: str = Field(description=QUOTE_BY_HELP)
+    place: str = Field(description=PLACE_HELP)
 
 
 class TagSet(BaseModel):
@@ -55,6 +74,7 @@ class TagSet(BaseModel):
     title: str = Field(description="Video title, max ~70 characters")
     description: str = Field(description="One or two sentence video description")
     hashtags: list[str] = Field(description="3-6 hashtags without the # symbol")
+    music_mood: str = Field(description=MUSIC_MOOD_HELP)
     scenes: list[SceneTerms]
 
 
@@ -92,6 +112,12 @@ def _write(req: DraftRequest, material: str, source_title: str | None, service: 
         raise HighlightError("The model returned an empty script; try again")
     for s in result.scenes:
         s.search_terms = _clean_terms(s.search_terms) or fallback_terms(s.text)
+        s.card_text, s.quote, s.quote_by, s.place = (s.card_text.strip()[:80], s.quote.strip()[:400],
+                                                     s.quote_by.strip()[:120], s.place.strip()[:120])
+        if s.quote and not quoted_in(s.quote, material):
+            s.quote = ""  # never show words the source does not contain
+        if not s.quote:
+            s.quote_by = ""
     return result
 
 
@@ -99,7 +125,7 @@ def _tag(scenes: list[str], service: str) -> ScriptDraft:
     """Search terms for a script the user wrote, without changing its words."""
     if not scenes:
         raise HighlightError("The script is empty")
-    terms: dict[int, list[str]] = {}
+    tags: dict[int, SceneTerms] = {}
     head: TagSet | None = None
     batch: list[int] = []
     size = 0
@@ -108,14 +134,32 @@ def _tag(scenes: list[str], service: str) -> ScriptDraft:
             prompt = "Scenes:\n" + "\n".join(f"[{n + 1}] {scenes[n]}" for n in batch)
             result = ask_once(service, TAG_SYSTEM, prompt, TagSet)
             head = head or result
-            terms.update({t.scene - 1: _clean_terms(t.search_terms) for t in result.scenes})
+            tags.update({t.scene - 1: t for t in result.scenes if t.scene - 1 in batch})
             batch, size = [], 0
         if i < len(scenes):
             batch.append(i)
             size += len(text)
     assert head is not None
-    return ScriptDraft(title=head.title, description=head.description, hashtags=head.hashtags, scenes=[
-        {"text": text, "search_terms": terms.get(n) or fallback_terms(text)} for n, text in enumerate(scenes)])
+    out = []
+    for n, text in enumerate(scenes):
+        t = tags.get(n)
+        terms = _clean_terms(t.search_terms) if t else []
+        quote = t.quote.strip() if t and quoted_in(t.quote, text) else ""
+        out.append({"text": text, "search_terms": terms or fallback_terms(text),
+                    "card_text": t.card_text.strip()[:80] if t else "", "quote": quote[:400],
+                    "quote_by": t.quote_by.strip()[:120] if t and quote else "", "place": t.place.strip()[:120] if t else ""})
+    return ScriptDraft(title=head.title, description=head.description, hashtags=head.hashtags,
+                       music_mood=head.music_mood.strip()[:100], scenes=out)
+
+
+def _letters(text: str) -> str:
+    return " ".join(re.findall(r"\w+", text.lower()))
+
+
+def quoted_in(quote: str, source: str) -> bool:
+    """Whether the quote appears word for word in the source (ignoring punctuation and case)."""
+    q = _letters(quote)
+    return bool(q) and q in _letters(source)
 
 
 def split_script(text: str, target_words: int = SCENE_WORDS) -> list[str]:
@@ -148,7 +192,7 @@ def _clean_terms(terms: list[str]) -> list[str]:
         t = re.sub(r"\s+", " ", re.sub(r"[^\w\s'-]", " ", t)).strip().lower()
         if t and t not in out:
             out.append(t[:60])
-    return out[:4]
+    return out[:6]
 
 
 STOPWORDS = frozenset("""

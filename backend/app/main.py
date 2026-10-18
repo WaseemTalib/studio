@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
@@ -20,11 +20,12 @@ from pydantic import ValidationError
 
 from . import db, presets, tts
 from .config import MUSIC_DIR, PROJECTS_DIR, VIDEOS_DIR, VOICE_DIR
-from .maker import footage, make, script
+from .maker import footage, make, music, script, shots, uploads
 from .pipeline import limits, media, render, runner
 from .pipeline.highlights import HighlightError, default_service, highlight_options
 from .pipeline.srt import SrtError, parse_srt
-from .schemas import (SOURCE_SPECIFIC_OPTIONS, AddLibraryVoice, ClipRender, ClipUpdate, DraftRequest, LimitChoice,
+from .schemas import (SOURCE_SPECIFIC_OPTIONS, AddLibraryVoice, ClipRender, ClipUpdate, DraftRequest, FootagePlanRequest,
+                      LimitChoice, MusicTrack, footage_sources,
                       ProjectOptions, ProjectUpdate, SourceInfoRequest, SpeechRequest, TemplateIn, VideoRequest)
 
 logging.basicConfig(level=logging.INFO)
@@ -65,12 +66,14 @@ def caption_preview(
     position: Literal["top", "middle", "bottom"] = "bottom",
     aspect: Literal["9:16", "1:1", "16:9"] = "9:16",
     title: bool = False,
+    size: int = Query(100, ge=50, le=200),
+    offset: int = Query(0, ge=-30, le=30),
 ) -> Response:
     if style != presets.NO_CAPTIONS and style not in presets.CAPTION_STYLES:
         raise HTTPException(404, "Unknown caption style")
     if not re.fullmatch(r"#[0-9a-fA-F]{6}", color):
         raise HTTPException(422, "color must be #rrggbb")
-    img = render.preview(style, color, position, aspect, "Your clip title appears here" if title else None)
+    img = render.preview(style, color, position, aspect, "Your clip title appears here" if title else None, size, offset)
     img.thumbnail((360, 640))
     buf = io.BytesIO()
     img.save(buf, "PNG", optimize=True)
@@ -410,6 +413,16 @@ def tts_delete(gid: str) -> None:
 # --- Video maker -----------------------------------------------------------------------
 
 
+@app.get("/api/ai-services")
+def ai_services() -> dict:
+    """The AI services and models the app can use for writing and picking, and the default one."""
+    try:
+        default = default_service()
+    except HighlightError:
+        default = None
+    return {"services": [o.public() for o in highlight_options("")], "default": default}
+
+
 @app.get("/api/maker/options")
 def maker_options() -> dict:
     """What the video maker can use: script-writing services, stock footage sites and music."""
@@ -419,7 +432,7 @@ def maker_options() -> dict:
         default = None
     services = [o.public() for o in highlight_options("")]
     return {"services": services, "default_service": default, "footage": footage.available(),
-            "music": make.music_library()}
+            "music": music.library(make.media_url), "music_sources": music.sources()}
 
 
 @app.post("/api/maker/draft")
@@ -434,6 +447,61 @@ def maker_draft(body: DraftRequest) -> dict:
                                   "options": [o.public() for o in highlight_options(current)]}) from e
     except HighlightError as e:
         raise HTTPException(400, str(e)) from e
+
+
+def _footage_call(call, *args):
+    try:
+        return call(*args)
+    except footage.FootageError as e:
+        raise HTTPException(422, str(e)) from e
+    except limits.LimitReached as e:
+        raise HTTPException(429, str(e)) from e
+
+
+@app.post("/api/maker/footage")
+def maker_footage(body: FootagePlanRequest) -> dict:
+    """Footage for review before rendering: the clip each scene's shots would use, and suggestions."""
+    return _footage_call(shots.plan_footage, body, make.SCENE_GAP, make.TAIL)
+
+
+@app.get("/api/maker/footage/search")
+def maker_footage_search(
+    q: str = Query(min_length=1, max_length=100),
+    sources: str = Query("pixabay", max_length=100),  # comma-separated; "photos" is Wikimedia Commons photos
+    aspect: Literal["9:16", "1:1", "16:9"] = "16:9",
+    resolution: Literal["720p", "1080p"] = "1080p",
+) -> list[dict]:
+    wanted = [s for s in sources.split(",") if s]
+    if not wanted or any(s not in (*footage.SOURCES, "photos") for s in wanted):
+        raise HTTPException(422, f"sources must be among {', '.join((*footage.SOURCES, 'photos'))}")
+    return _footage_call(shots.search_media, wanted, q.strip(), aspect, resolution)
+
+
+@app.get("/api/maker/footage/uploads")
+def maker_uploads() -> list[dict]:
+    """Your own clips and images, for the footage review."""
+    return [{**c.public(), "key": c.key} for c in uploads.clips(make.media_url)]
+
+
+@app.post("/api/maker/footage/uploads", status_code=201)
+async def maker_upload(file: Annotated[UploadFile, File()]) -> list[dict]:
+    try:
+        name = uploads.safe_name(file.filename or "")
+        uploads.UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        with (uploads.UPLOAD_DIR / name).open("wb") as out:
+            shutil.copyfileobj(file.file, out, length=8 * 1024 * 1024)
+        uploads.register(uploads.UPLOAD_DIR / name)
+    except uploads.UploadError as e:
+        raise HTTPException(422, str(e)) from e
+    return maker_uploads()
+
+
+@app.delete("/api/maker/footage/uploads/{name}", status_code=204)
+def maker_upload_delete(name: str) -> None:
+    try:
+        uploads.remove(name)
+    except uploads.UploadError as e:
+        raise HTTPException(404, "Clip not found") from e
 
 
 def _video_live(video: dict | None) -> dict | None:
@@ -454,13 +522,15 @@ def maker_videos() -> list[dict]:
 
 @app.post("/api/maker/videos", status_code=201)
 def maker_create(body: VideoRequest) -> dict:
-    if body.music:
-        try:
-            make._music(body.music)
-        except media.MediaError as e:
-            raise HTTPException(422, str(e)) from e
     try:
-        footage.providers_for(body.footage)
+        if body.music_mode == "track" and body.music:
+            music.path_of(body.music)
+        elif body.music_mode == "random":
+            music.pick_random()
+    except music.MusicError as e:
+        raise HTTPException(422, str(e)) from e
+    try:
+        footage.providers_for(footage_sources(body))
     except footage.FootageError as e:
         raise HTTPException(422, str(e)) from e
     vid = db.new_id()
@@ -516,23 +586,49 @@ def maker_delete(vid: str) -> None:
 
 @app.get("/api/maker/music")
 def maker_music() -> list[dict]:
-    return make.music_library()
+    return music.library(make.media_url)
 
 
 @app.post("/api/maker/music", status_code=201)
 async def maker_music_upload(file: Annotated[UploadFile, File()]) -> list[dict]:
     try:
-        name = make.music_name(file.filename or "")
-    except ValueError as e:
+        name = music.safe_name(file.filename or "")
+    except music.MusicError as e:
         raise HTTPException(422, str(e)) from e
     with (MUSIC_DIR / name).open("wb") as out:
         shutil.copyfileobj(file.file, out, length=4 * 1024 * 1024)
-    return make.music_library()
+    return music.library(make.media_url)
 
 
 @app.delete("/api/maker/music/{name}", status_code=204)
 def maker_music_delete(name: str) -> None:
-    path = MUSIC_DIR / name
-    if path.parent != MUSIC_DIR or not path.is_file():
-        raise HTTPException(404, "Track not found")
-    path.unlink()
+    try:
+        music.remove(name)
+    except music.MusicError as e:
+        raise HTTPException(404, "Track not found") from e
+
+
+@app.get("/api/maker/music/search")
+def maker_music_search(
+    q: str = Query(min_length=1, max_length=100),
+    source: Literal["jamendo", "commons"] = "commons",
+    instrumental: bool = True,
+) -> list[dict]:
+    """Free-licensed tracks that allow commercial use."""
+    try:
+        return music.search(q.strip(), source, instrumental)
+    except music.MusicError as e:
+        raise HTTPException(422, str(e)) from e
+    except (footage.FootageError, limits.LimitReached) as e:
+        raise HTTPException(429 if isinstance(e, limits.LimitReached) else 422, str(e)) from e
+
+
+@app.post("/api/maker/music/add", status_code=201)
+def maker_music_add(body: MusicTrack) -> dict:
+    """Download a found track into the library (with its credit)."""
+    try:
+        name = music.add(body.model_dump())
+    except music.MusicError as e:
+        raise HTTPException(422, str(e)) from e
+    return {"name": name, "library": music.library(make.media_url)}
+

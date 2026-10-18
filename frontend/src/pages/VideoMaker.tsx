@@ -1,10 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { api, captionPreviewUrl, formatEta, formatTime, type LimitState, type LookOptions, type Presets } from '../api'
 import { LimitDialog, LimitLine } from '../components/LimitDialog'
+import { rememberedService, useAIServices } from '../aiServices'
+import AIModelSelect from '../components/AIModelSelect'
+import FootageReview, { type Suggestions } from '../components/FootageReview'
 import LookControls from '../components/LookControls'
+import MusicPicker from '../components/MusicPicker'
 import {
-  DraftLimit, MAKER_STAGE_LABEL, makerApi, SCRIPT_LANGUAGES,
-  type DraftRequest, type Footage, type MakerOptions, type Scene, type SourceKind, type Video, type VideoRequest,
+  blankScene, DraftLimit, FOOTAGE_SOURCES, forApi, MAKER_STAGE_LABEL, makerApi, SCRIPT_LANGUAGES, withUid,
+  type DraftRequest, type FootageSource, type MakerOptions, type Scene, type SourceKind, type Video, type VideoRequest,
 } from '../makerApi'
 import { usePolling } from '../usePolling'
 import { formatWait, useCountdown } from '../useCountdown'
@@ -21,29 +25,28 @@ const KINDS: { id: SourceKind; label: string; hint: string; placeholder: string 
     placeholder: 'Or paste the article text here (for sites that need a login)' },
 ]
 const MINUTES = [1, 2, 3, 5, 8, 10, 15, 20]
-const FOOTAGE: { id: Footage; label: string }[] = [
-  { id: 'pexels', label: 'Pexels' }, { id: 'pixabay', label: 'Pixabay' }, { id: 'both', label: 'Both' },
-  { id: 'none', label: 'Plain background' },
-]
-const KEY_HELP: Record<'pexels' | 'pixabay', string> = {
-  pexels: 'PEXELS_API_KEY (free at pexels.com/api)',
-  pixabay: 'PIXABAY_API_KEY (free at pixabay.com/api/docs)',
-}
 
-const DEFAULT_SETTINGS_REQUEST: Omit<VideoRequest, 'title' | 'description' | 'hashtags' | 'scenes' | 'language'> = {
+const DEFAULT_SETTINGS_REQUEST: Omit<VideoRequest, 'title' | 'description' | 'hashtags' | 'scenes' | 'language' | 'ai_service'> = {
   voice: { provider: 'local', voice_id: 'af_heart', voice_name: 'Heart', model_id: 'kokoro-v1.0', settings: DEFAULT_SETTINGS },
   aspect: '16:9',
   resolution: '1080p',
   footage: 'pexels',
+  sources: ['pixabay', 'coverr', 'unsplash'],
   clip_seconds: 5,
   transition: 'fade',
   caption_style: 'simple',
   caption_position: 'bottom',
   highlight_color: '#facc15',
   words_per_line: 4,
+  caption_size: 100,
+  caption_offset: 0,
   title_overlay: false,
   music: null,
+  music_mode: 'track',
+  music_mood: '',
   music_volume: 0.12,
+  cards: true,
+  photos: true,
 }
 type Settings = typeof DEFAULT_SETTINGS_REQUEST
 
@@ -55,14 +58,18 @@ interface Script {
 }
 
 const wordCount = (scenes: Scene[]) => scenes.reduce((n, s) => n + s.text.split(/\s+/).filter(Boolean).length, 0)
+const CREDIT_SOURCE: Record<string, string> = {
+  pexels: 'Pexels', pixabay: 'Pixabay', wikimedia: 'Wikimedia Commons', commons: 'Wikimedia Commons', jamendo: 'Jamendo',
+}
 const isWorking = (v: Video) => v.status === 'queued' || v.status === 'processing'
 
 export default function VideoMaker() {
   const [presets, setPresets] = useState<Presets | null>(null)
   const [options, setOptions] = useState<MakerOptions | null>(null)
   const [source, setSource] = useState<DraftRequest>({
-    kind: 'prompt', text: '', url: null, minutes: 3, language: 'English', tone: '', service: null,
+    kind: 'prompt', text: '', url: null, minutes: 3, language: 'English', tone: '', service: rememberedService(),
   })
+  const aiServices = useAIServices()
   const [script, setScript] = useState<Script | null>(null)
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS_REQUEST)
   const [videos, setVideos] = useState<Video[]>([])
@@ -70,6 +77,8 @@ export default function VideoMaker() {
   const [draftLimit, setDraftLimit] = useState<LimitState | null>(null)
   const [making, setMaking] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [suggestions, setSuggestions] = useState<Suggestions>({})
+  const [finding, setFinding] = useState<number | 'all' | null>(null)
   const scriptRef = useRef<HTMLDivElement>(null)
 
   const loadVideos = useCallback(() => makerApi.videos().then(setVideos, (e: Error) => setError(e.message)), [])
@@ -77,7 +86,8 @@ export default function VideoMaker() {
     api.presets().then(setPresets, (e: Error) => setError(e.message))
     makerApi.options().then((o) => {
       setOptions(o)
-      if (!o.footage.pexels) setSettings((s) => ({ ...s, footage: o.footage.pixabay ? 'pixabay' : 'none' }))
+      // Start with the stock sources that have keys (Commons is opt-in: real footage, but slower and mixed).
+      setSettings((s) => ({ ...s, sources: s.sources.filter((src) => o.footage[src]) }))
     }, (e: Error) => setError(e.message))
     loadVideos()
   }, [loadVideos])
@@ -94,7 +104,9 @@ export default function VideoMaker() {
     setDraftLimit(null)
     try {
       const d = await makerApi.draft({ ...source, service, url: source.kind === 'news' ? source.url : null })
-      setScript({ title: d.title, description: d.description, hashtags: d.hashtags, scenes: d.scenes })
+      setScript({ title: d.title, description: d.description, hashtags: d.hashtags, scenes: d.scenes.map(withUid) })
+      if (d.music_mood) setSettings((s) => ({ ...s, music_mood: d.music_mood }))
+      setSuggestions({})
       setTimeout(() => scriptRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
     } catch (e) {
       if (e instanceof DraftLimit) setDraftLimit(e.state)
@@ -109,8 +121,8 @@ export default function VideoMaker() {
     setMaking(true)
     setError(null)
     try {
-      const scenes = script.scenes.map((s) => ({ ...s, text: s.text.trim() })).filter((s) => s.text)
-      const v = await makerApi.create({ ...settings, ...script, scenes, language: languageCode })
+      const scenes = script.scenes.map((s) => forApi({ ...s, text: s.text.trim() })).filter((s) => s.text)
+      const v = await makerApi.create({ ...settings, ...script, scenes, language: languageCode, ai_service: source.service })
       setVideos((all) => [v, ...all])
       document.getElementById('maker-videos')?.scrollIntoView({ behavior: 'smooth' })
     } catch (e) {
@@ -120,10 +132,47 @@ export default function VideoMaker() {
     }
   }
 
+  /** Find footage for every scene (or one) for review; replaces the choices of the scenes searched. */
+  async function findFootage(only?: number) {
+    if (!script) return
+    setFinding(only ?? 'all')
+    setError(null)
+    try {
+      const plan = await makerApi.planFootage({
+        scenes: script.scenes.map((s) => forApi({ ...s, text: s.text.trim() || '…', clips: [] })),
+        sources: settings.sources, aspect: settings.aspect, resolution: settings.resolution,
+        clip_seconds: settings.clip_seconds, speed: settings.voice.settings.speed, cards: settings.cards,
+        photos: settings.photos, ai_service: source.service, ...(only !== undefined ? { only } : {}),
+      })
+      setScript((cur) => cur && {
+        ...cur,
+        scenes: cur.scenes.map((s, i) => {
+          const found = plan.scenes[i]
+          return found && script.scenes[i]?.uid === s.uid ? { ...s, clips: found.clips } : s
+        }),
+      })
+      setSuggestions((cur) => {
+        const next = { ...cur }
+        script.scenes.forEach((s, i) => {
+          const found = plan.scenes[i]
+          if (found) next[s.uid!] = { shots: found.shots, candidates: found.candidates }
+        })
+        return next
+      })
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setFinding(null)
+    }
+  }
+
   function reuse(v: Video) {
-    const { title, description, hashtags, scenes, language, ...rest } = v.request
-    setScript({ title, description, hashtags, scenes })
-    setSettings({ ...DEFAULT_SETTINGS_REQUEST, ...rest })
+    const { title, description, hashtags, scenes, language, ai_service, ...rest } = v.request
+    if (ai_service) setSrc('service', ai_service)
+    setScript({ title, description, hashtags, scenes: scenes.map((sc) => withUid({ ...blankScene(), ...sc, uid: undefined })) })
+    const legacy: FootageSource[] = rest.footage === 'none' ? [] : rest.footage === 'both' ? ['pexels', 'pixabay'] : [rest.footage]
+    setSettings({ ...DEFAULT_SETTINGS_REQUEST, ...rest, sources: rest.sources ?? legacy })
+    setSuggestions({})
     const label = SCRIPT_LANGUAGES.find((l) => l.code === language)?.label
     if (label) setSrc('language', label)
     setTimeout(() => scriptRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
@@ -132,13 +181,12 @@ export default function VideoMaker() {
   const look: LookOptions = {
     aspect: settings.aspect, layout: 'fill', caption_style: settings.caption_style,
     caption_position: settings.caption_position, highlight_color: settings.highlight_color,
-    words_per_line: settings.words_per_line, title_overlay: settings.title_overlay, auto_zoom: false,
+    words_per_line: settings.words_per_line, caption_size: settings.caption_size, caption_offset: settings.caption_offset,
+    title_overlay: settings.title_overlay, auto_zoom: false,
     resolution: settings.resolution,
   }
   const words = script ? wordCount(script.scenes) : 0
   const seconds = Math.round(words / 150 * 60 / settings.voice.settings.speed)
-  const footageMissing = options && settings.footage !== 'none'
-    && (settings.footage === 'both' ? !options.footage.pexels && !options.footage.pixabay : !options.footage[settings.footage])
 
   return (
     <div className="maker">
@@ -190,15 +238,7 @@ export default function VideoMaker() {
                     onChange={(e) => setSrc('tone', e.target.value)} />
                 </label>
               )}
-              <label className="field">
-                <span>Written by</span>
-                <select value={source.service ?? ''} onChange={(e) => setSrc('service', e.target.value || null)}>
-                  <option value="">Default{options?.default_service ? ` (${options.default_service.split(':')[0]})` : ''}</option>
-                  {options?.services.map((s) => (
-                    <option key={s.id} value={s.id} disabled={!s.available}>{s.label}{s.available ? '' : ' — needs key'}</option>
-                  ))}
-                </select>
-              </label>
+              <AIModelSelect services={aiServices} value={source.service} onChange={(v) => setSrc('service', v)} />
             </div>
             <div className="row">
               <button className="primary" disabled={drafting || (!source.text.trim() && !(source.kind === 'news' && source.url))}
@@ -207,7 +247,7 @@ export default function VideoMaker() {
               </button>
               {source.kind !== 'script' && !script && (
                 <button type="button" className="link" onClick={() => {
-                  setScript({ title: 'Untitled video', description: '', hashtags: [], scenes: [{ text: '', search_terms: [] }] })
+                  setScript({ title: 'Untitled video', description: '', hashtags: [], scenes: [blankScene()] })
                 }}>or start from a blank script</button>
               )}
             </div>
@@ -229,19 +269,21 @@ export default function VideoMaker() {
               <section className="panel section">
                 <h3><span className="step">4</span> Footage &amp; format</h3>
                 <div className="field">
-                  <span>Stock footage</span>
-                  <div className="segmented">
-                    {FOOTAGE.map((f) => (
-                      <button type="button" key={f.id} className={settings.footage === f.id ? 'on' : ''}
-                        onClick={() => set('footage', f.id)}>{f.label}</button>
-                    ))}
+                  <span>Footage sources <em className="muted">(none ticked: a plain background)</em></span>
+                  <div className="source-list">
+                    {FOOTAGE_SOURCES.map((f) => {
+                      const ok = options?.footage[f.id] ?? false
+                      return (
+                        <label key={f.id} className={`source-option ${ok ? '' : 'disabled'}`}
+                          title={ok ? '' : `Add ${f.key} to backend/.env (${f.signup}) and restart the backend`}>
+                          <input type="checkbox" disabled={!ok} checked={settings.sources.includes(f.id)}
+                            onChange={(e) => set('sources', e.target.checked
+                              ? [...settings.sources, f.id] : settings.sources.filter((x) => x !== f.id))} />
+                          <span><strong>{f.label}</strong> <span className="muted small">{f.hint}{ok ? '' : ` · needs ${f.key}`}</span></span>
+                        </label>
+                      )
+                    })}
                   </div>
-                  {footageMissing && (
-                    <span className="small limit-reason">
-                      Add {settings.footage === 'both' ? `${KEY_HELP.pexels} or ${KEY_HELP.pixabay}` : KEY_HELP[settings.footage as 'pexels' | 'pixabay']} to
-                      backend/.env and restart the backend, or use a plain background.
-                    </span>
-                  )}
                 </div>
                 <div className="row wrap">
                   <div className="field">
@@ -276,6 +318,21 @@ export default function VideoMaker() {
                     </div>
                   </div>
                 </div>
+                <div className="row wrap">
+                  <label className="field check">
+                    <input type="checkbox" checked={settings.cards} onChange={(e) => set('cards', e.target.checked)} />
+                    Fact &amp; quote cards <em className="muted">(full-screen, from the script)</em>
+                  </label>
+                  <label className="field check">
+                    <input type="checkbox" checked={settings.photos} onChange={(e) => set('photos', e.target.checked)} />
+                    Photos of named places <em className="muted">(free-licensed, Wikimedia Commons)</em>
+                  </label>
+                </div>
+                <FootageReview scenes={script.scenes} suggestions={suggestions} sources={settings.sources}
+                  aspect={settings.aspect} resolution={settings.resolution} busy={finding} onFind={findFootage}
+                  onChange={(i, clips) => setScript((cur) => cur && {
+                    ...cur, scenes: cur.scenes.map((s, n) => (n === i ? { ...s, clips } : s)),
+                  })} />
               </section>
 
               <section className="panel section">
@@ -285,14 +342,15 @@ export default function VideoMaker() {
                     onChange={(l) => setSettings((s) => ({
                       ...s, caption_style: l.caption_style, caption_position: l.caption_position,
                       highlight_color: l.highlight_color, words_per_line: l.words_per_line, title_overlay: l.title_overlay,
+                      caption_size: l.caption_size, caption_offset: l.caption_offset,
                     }))} />
                 )}
               </section>
 
               <section className="panel section">
                 <h3><span className="step">6</span> Background music</h3>
-                <MusicPicker options={options} onOptions={setOptions} value={settings.music} volume={settings.music_volume}
-                  onChange={(music, volume) => setSettings((s) => ({ ...s, music, music_volume: volume }))} onError={setError} />
+                <MusicPicker options={options} onOptions={setOptions} value={settings} onError={setError}
+                  onChange={(next) => setSettings((s) => ({ ...s, ...next }))} />
               </section>
             </>
           )}
@@ -305,10 +363,13 @@ export default function VideoMaker() {
               <dt>Script</dt><dd>{script ? `${script.scenes.length} scenes · ${words} words` : 'Not written yet'}</dd>
               <dt>Length</dt><dd>{script ? `about ${formatTime(seconds)}` : `${source.minutes} min target`}</dd>
               <dt>Voice</dt><dd>{settings.voice.voice_name} · {settings.voice.provider === 'local' ? 'Kokoro' : 'ElevenLabs'}</dd>
-              <dt>Footage</dt><dd>{FOOTAGE.find((f) => f.id === settings.footage)?.label} · {settings.aspect} · {settings.resolution}</dd>
-              <dt>Music</dt><dd>{settings.music ?? 'None'}</dd>
+              <dt>Footage</dt><dd>{settings.sources.length
+                ? settings.sources.map((s) => FOOTAGE_SOURCES.find((f) => f.id === s)?.label).join(', ') : 'Plain background'}
+                {' '}· {settings.aspect} · {settings.resolution}</dd>
+              <dt>Music</dt><dd>{settings.music_mode === 'random' ? 'Random from library'
+                : settings.music_mode === 'auto' ? `Matches “${settings.music_mood || 'the script'}”` : settings.music ?? 'None'}</dd>
             </dl>
-            <button className="primary block" disabled={!script || making || !!footageMissing || !script.scenes.some((s) => s.text.trim())}
+            <button className="primary block" disabled={!script || making || !script.scenes.some((s) => s.text.trim())}
               onClick={makeVideo}>
               {making ? 'Starting…' : 'Make video'}
             </button>
@@ -372,7 +433,7 @@ function DraftLimitDialog({ state, onRetry, onClose }: {
 function ScriptEditor({ script, onChange }: { script: Script; onChange: (s: Script) => void }) {
   const words = wordCount(script.scenes)
   const setScene = (i: number, scene: Scene) => onChange({ ...script, scenes: script.scenes.map((s, n) => (n === i ? scene : s)) })
-  const insert = (i: number) => onChange({ ...script, scenes: [...script.scenes.slice(0, i), { text: '', search_terms: [] }, ...script.scenes.slice(i)] })
+  const insert = (i: number) => onChange({ ...script, scenes: [...script.scenes.slice(0, i), blankScene(), ...script.scenes.slice(i)] })
   const remove = (i: number) => onChange({ ...script, scenes: script.scenes.filter((_, n) => n !== i) })
   const move = (i: number, d: -1 | 1) => {
     const scenes = [...script.scenes]
@@ -404,7 +465,7 @@ function ScriptEditor({ script, onChange }: { script: Script; onChange: (s: Scri
       </div>
       <ol className="scene-list">
         {script.scenes.map((s, i) => (
-          <li key={i} className="scene">
+          <li key={s.uid ?? i} className="scene">
             <div className="scene-head">
               <strong>Scene {i + 1}</strong>
               <span className="scene-tools">
@@ -417,10 +478,44 @@ function ScriptEditor({ script, onChange }: { script: Script; onChange: (s: Scri
             <textarea rows={3} value={s.text} placeholder="What the narrator says in this scene"
               onChange={(e) => setScene(i, { ...s, text: e.target.value })} />
             <TermsInput terms={s.search_terms} onChange={(t) => setScene(i, { ...s, search_terms: t })} />
+            <SceneExtras scene={s} onChange={(next) => setScene(i, next)} />
           </li>
         ))}
       </ol>
     </section>
+  )
+}
+
+/** Optional per scene: a fact card, a quote card and a place to show a photo of. */
+function SceneExtras({ scene, onChange }: { scene: Scene; onChange: (s: Scene) => void }) {
+  const has = !!(scene.card_text || scene.quote || scene.place)
+  const [open, setOpen] = useState(has)
+  if (!open) {
+    return <button type="button" className="link small scene-extras-toggle" onClick={() => setOpen(true)}>+ Card, quote or place photo</button>
+  }
+  return (
+    <div className="scene-extras">
+      <label className="field">
+        <span>Fact card</span>
+        <input value={scene.card_text} maxLength={80} placeholder="e.g. 158 YEARS IN PRISON"
+          onChange={(e) => onChange({ ...scene, card_text: e.target.value })} />
+      </label>
+      <label className="field">
+        <span>Quote</span>
+        <input value={scene.quote} maxLength={400} placeholder="Exact words someone said"
+          onChange={(e) => onChange({ ...scene, quote: e.target.value })} />
+      </label>
+      <label className="field">
+        <span>Said by</span>
+        <input value={scene.quote_by} maxLength={120} placeholder="Name, role"
+          onChange={(e) => onChange({ ...scene, quote_by: e.target.value })} />
+      </label>
+      <label className="field">
+        <span>Place photo</span>
+        <input value={scene.place} maxLength={120} placeholder="e.g. Ensenada, Baja California"
+          onChange={(e) => onChange({ ...scene, place: e.target.value })} />
+      </label>
+    </div>
   )
 }
 
@@ -546,72 +641,6 @@ function VoicePicker({ value, language, onChange }: {
   )
 }
 
-function MusicPicker({ options, onOptions, value, volume, onChange, onError }: {
-  options: MakerOptions | null
-  onOptions: (o: MakerOptions) => void
-  value: string | null
-  volume: number
-  onChange: (music: string | null, volume: number) => void
-  onError: (m: string) => void
-}) {
-  const [uploading, setUploading] = useState(false)
-  const tracks = options?.music ?? []
-  async function upload(file: File | undefined) {
-    if (!file || !options) return
-    setUploading(true)
-    try {
-      const music = await makerApi.uploadMusic(file)
-      onOptions({ ...options, music })
-      const added = music.find((t) => !tracks.some((x) => x.name === t.name))
-      if (added) onChange(added.name, volume)
-    } catch (e) {
-      onError((e as Error).message)
-    } finally {
-      setUploading(false)
-    }
-  }
-  async function remove(name: string) {
-    if (!options || !confirm(`Delete “${name}” from your music library?`)) return
-    try {
-      await makerApi.deleteMusic(name)
-      onOptions({ ...options, music: tracks.filter((t) => t.name !== name) })
-      if (value === name) onChange(null, volume)
-    } catch (e) {
-      onError((e as Error).message)
-    }
-  }
-  const current = tracks.find((t) => t.name === value)
-  return (
-    <>
-      <div className="row wrap">
-        <label className="field grow">
-          <span>Track</span>
-          <select value={value ?? ''} onChange={(e) => onChange(e.target.value || null, volume)}>
-            <option value="">No music</option>
-            {tracks.map((t) => <option key={t.name} value={t.name}>{t.name}</option>)}
-          </select>
-        </label>
-        <label className="button align-end">
-          {uploading ? 'Uploading…' : 'Upload a track'}
-          <input type="file" hidden accept="audio/*,.mp3,.m4a,.wav,.ogg,.flac,.aac" onChange={(e) => upload(e.target.files?.[0])} />
-        </label>
-        {current && <button type="button" className="link danger align-end" onClick={() => remove(current.name)}>Delete track</button>}
-      </div>
-      {current && (
-        <>
-          <audio controls src={current.url} className="maker-audio" />
-          <label className="field">
-            <span>Music volume: {Math.round(volume * 100)}%</span>
-            <input type="range" min={0} max={0.6} step={0.02} value={volume} onChange={(e) => onChange(value, Number(e.target.value))} />
-          </label>
-        </>
-      )}
-      <p className="muted small">Use music you have the rights to. Free sources: YouTube Audio Library, Pixabay Music, Free Music Archive.
-        It loops under the narration and fades out at the end.</p>
-    </>
-  )
-}
-
 function VideoCard({ video, onUpdate, onRemoved, onReuse, onError }: {
   video: Video
   onUpdate: (v: Video) => void
@@ -669,10 +698,15 @@ function VideoCard({ video, onUpdate, onRemoved, onReuse, onError }: {
         </div>
         {video.credits.length > 0 && (
           <details className="small muted">
-            <summary>Footage credits ({video.credits.length})</summary>
+            <summary>Credits ({video.credits.length})</summary>
             <ul className="maker-credits">
               {video.credits.map((c) => (
-                <li key={c.page}><a href={c.page} target="_blank" rel="noreferrer">{c.author || 'Unknown'}</a> on {c.provider === 'pexels' ? 'Pexels' : 'Pixabay'}</li>
+                <li key={c.page || c.title}>
+                  {c.title && <>Music “{c.title}” by </>}
+                  <a href={c.page} target="_blank" rel="noreferrer">{c.author || 'Unknown'}</a>
+                  {' '}on {CREDIT_SOURCE[c.provider] ?? c.provider}
+                  {c.license && ` (${c.license})`}
+                </li>
               ))}
             </ul>
           </details>

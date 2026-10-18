@@ -49,6 +49,12 @@ KOKORO_MODEL = os.environ.get("SHORTCUT_KOKORO_MODEL", "kokoro-v1.0.onnx")
 # Video maker: long videos from a prompt, script or article, with free stock footage.
 PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "")
 PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY", "")
+COVERR_API_KEY = os.environ.get("COVERR_API_KEY", "")            # stock video; ask team@coverr.co for a key
+UNSPLASH_ACCESS_KEY = os.environ.get("UNSPLASH_ACCESS_KEY", "")  # photos; unsplash.com/developers
+JAMENDO_CLIENT_ID = os.environ.get("JAMENDO_CLIENT_ID", "")  # free music search (devportal.jamendo.com)
+# Your email or website, sent to Wikimedia Commons with each request as its User-Agent policy asks;
+# without it Commons may refuse downloads of whole music files.
+CONTACT = os.environ.get("SHORTCUT_CONTACT", "").strip()
 VIDEOS_DIR = DATA_DIR / "videos"
 MUSIC_DIR = VIDEOS_DIR / "music"  # served with the videos
 

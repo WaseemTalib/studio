@@ -28,6 +28,7 @@ SHORT_WAIT_SECONDS = 90.0
 SERVICE_LABELS = {
     "groq": "Groq", "gemini": "Google Gemini", "openrouter": "OpenRouter", "sambanova": "SambaNova",
     "local": "Whisper (this computer)", "pexels": "Pexels", "pixabay": "Pixabay",
+    "wikimedia": "Wikimedia Commons", "jamendo": "Jamendo",
 }
 
 
