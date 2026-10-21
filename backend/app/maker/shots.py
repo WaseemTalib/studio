@@ -25,7 +25,7 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..config import FFMPEG, FFPROBE
+from ..config import FFMPEG, FFPROBE, YT_DLP
 from ..pipeline import cancel, limits, media
 from ..presets import APP_FONT_DIR
 from ..schemas import FootagePlanRequest, Scene, footage_sources
@@ -157,9 +157,9 @@ class Picker:
                 if not self._on_limit(provider, e.limit):
                     return []
             except footage.FootageError as e:
-                if provider != "wikimedia":
+                if provider not in ("wikimedia", "openverse", "web", "youtube"):
                     raise
-                log.warning("photo search failed: %s", e)  # photos are optional
+                log.warning("%s search failed: %s", provider, e)
                 return []
 
     def _on_limit(self, provider: str, limit: limits.Limit) -> bool:
@@ -358,11 +358,19 @@ def search_media(sources: list[str], term: str, aspect: str, resolution: str) ->
     w, h = output_size(aspect, resolution)
     providers = (["wikimedia"] if "photos" in sources else []) + footage.providers_for([s for s in sources if s != "photos"])
     picker = Picker(providers, footage.orientation_of(aspect), min(w, h), True)
-    results: dict[str, StockClip] = {}
-    for p in providers:
-        for clip in picker.search(p, term):
-            results.setdefault(clip.key, clip)
-    return [{**c.public(), "key": c.key} for c in sorted(results.values(), key=lambda c: -c.score)]
+    groups: list[list[StockClip]] = []
+    with ThreadPoolExecutor(max_workers=min(4, len(providers) or 1)) as pool:
+        found = pool.map(lambda p: picker.search(p, term), providers)
+        for clips in found:
+            groups.append(sorted(clips, key=lambda c: -c.score))
+    results: list[StockClip] = []
+    seen: set[str] = set()
+    for index in range(max((len(group) for group in groups), default=0)):
+        for group in groups:
+            if index < len(group) and group[index].key not in seen:
+                results.append(group[index])
+                seen.add(group[index].key)
+    return [{**clip.public(), "key": clip.key} for clip in results]
 
 
 # --- Rendering shots ------------------------------------------------------------------------
@@ -425,6 +433,13 @@ def shoot(vid: str, scenes: list[Scene], shots: list[Shot], chosen: list[StockCl
                     f.used_clip = True
                 except (media.MediaError, uploads.UploadError) as e:
                     log.warning("shot %s: your clip failed (%s); plain background", f.out.name, str(e).splitlines()[-1])
+            elif f.clip is not None and f.clip.provider == "youtube":
+                try:
+                    _encode_video(f, ["-i", str(downloads.get(f.clip))], size, partial)
+                    f.used_clip = True
+                except (media.MediaError, footage.FootageError) as e:
+                    log.warning("shot %s: YouTube segment failed (%s); plain background", f.out.name,
+                                str(e).splitlines()[-1])
             elif f.clip is not None:
                 link = (footage.coverr_link(f.clip.id) or f.clip.link) if f.clip.provider == "coverr" else f.clip.link
                 stream = ["-user_agent", footage.USER_AGENT, "-reconnect", "1", "-reconnect_streamed", "1",
@@ -528,20 +543,49 @@ class _Downloads:
             if path.exists():
                 return path
             self.folder.mkdir(parents=True, exist_ok=True)
+            if clip.provider == "youtube":
+                return self._youtube(clip, path, safe)
             part = path.with_suffix(".part")
             try:
                 with requests.get(clip.link, stream=True, timeout=60,
                                   headers={"User-Agent": footage.USER_AGENT}) as r:
                     r.raise_for_status()
+                    maximum = 50 * 1024 * 1024
+                    if int(r.headers.get("Content-Length") or 0) > maximum:
+                        raise footage.FootageError("download is larger than 50 MB")
+                    total = 0
                     with part.open("wb") as out:
                         for chunk in r.iter_content(1 << 20):
                             cancel.check()
+                            total += len(chunk)
+                            if total > maximum:
+                                raise footage.FootageError("download is larger than 50 MB")
                             out.write(chunk)
-            except requests.RequestException as e:
+            except (requests.RequestException, footage.FootageError) as e:
                 part.unlink(missing_ok=True)
+                if isinstance(e, footage.FootageError):
+                    raise
                 raise footage.FootageError(f"download failed: {e.__class__.__name__}") from e
             part.rename(path)
             return path
+
+    def _youtube(self, clip: StockClip, path: Path, safe: str) -> Path:
+        template = self.folder / f"{safe}.yt.%(ext)s"
+        seconds = min(30.0, max(2.0, clip.duration))
+        try:
+            media.run([YT_DLP, "--no-warnings", "--ignore-config", "--no-plugin-dirs", "--no-playlist",
+                       "--socket-timeout", "10", "--retries", "1", "--fragment-retries", "1",
+                       "--download-sections", f"*0-{seconds:.3f}", "--force-keyframes-at-cuts",
+                       "--ffmpeg-location", shutil.which(FFMPEG) or FFMPEG,
+                       "-f", "bv*[height<=1080][width<=1920]/b[height<=1080][width<=1920]",
+                       "--merge-output-format", "mp4", "--max-filesize", "50M", "-o", str(template), clip.link])
+        except media.MediaError as e:
+            raise footage.FootageError("YouTube segment download failed") from e
+        matches = sorted(self.folder.glob(f"{safe}.yt.*"))
+        if not matches:
+            raise footage.FootageError("YouTube segment download produced no file")
+        matches[0].replace(path)
+        return path
 
 
 # --- Cards ------------------------------------------------------------------------------------

@@ -13,6 +13,11 @@ from .styles import (AUDIO_ONLY, COMPOSITION, DENSITY, NO_TEXT, STYLES, UNIVERSA
 
 BEAT_TIMES = ("[0–3s]", "[3–7s]", "[7–10s]")
 TECH_COLOR = re.compile(r"#[0-9a-fA-F]{3,8}\b|\brgba?\s*\(|\bhsla?\s*\(|\bpantone\b", re.I)
+GENERIC_DENSITY = ("Use motivated camera movement and a clear visual change every two to three seconds while keeping "
+                   "people, wardrobe, props and location geography continuous.")
+GENERIC_NEGATIVES = ("Negative constraints: no animation or synthetic-looking people, no warped faces or hands, extra "
+                     "fingers or limbs, duplicate people, identity drift, changing wardrobe, teleporting props, unsafe "
+                     "actions, speech bubbles, readable text, logos or watermarks.")
 
 
 def _norm(text: str) -> str:
@@ -31,6 +36,8 @@ def split_vo(vo: str, parts: list[str]) -> list[str]:
 def _characters(settings: DirectorSettings, proposal: dict, n: int) -> str:
     cast = {c["role"]: c["anchor"] for c in proposal.get("cast") or []}
     roles = [r for r in proposal["rows"][n - 1].get("roles") or [] if r in cast] or list(cast)
+    if settings.mode == "generic":
+        return " ".join(f"{role}: {cast[role]}" for role in roles) or "No recurring on-screen person in this clip."
     if settings.style == "3":
         cards = " ".join(f"{role}: {cast[role]}" for role in roles)
         return f"{character_anchor('3', n - 1, False)} Characters in this clip (only these): {cards}".strip()
@@ -51,20 +58,21 @@ def clip_prompt(settings: DirectorSettings, proposal: dict, n: int, d: dict) -> 
     lines = [
         f"Output: approximately ten-second clip, {settings.aspect} aspect ratio, 720p target, 24 FPS, synchronized audio.",
         f"Environment: {environment}",
-        f"Character: {_characters(settings, proposal, n)}",
+        f"{'People and subject continuity' if settings.mode == 'generic' else 'Character'}: "
+        f"{_characters(settings, proposal, n)}",
         f"Palette: {d['palette']}",
         f"Composition: {COMPOSITION[settings.aspect]} {d['composition']}",
         f"First frame: {d['first_frame']}",
         "Timed synchronized visual beats:",
         *[f"- {BEAT_TIMES[i]} (VO: \"{parts[i]}\"): {actions[i]}" for i in range(3)],
-        f"{DENSITY}" if style.devices_rule else "Clear actions, expressive reactions and motivated cuts; leave room for "
-                                                "the reaction beat.",
+        (GENERIC_DENSITY if settings.mode == "generic" else DENSITY) if style.devices_rule else
+        "Clear actions, expressive reactions and motivated cuts; leave room for the reaction beat.",
         f"Dialogue: {AUDIO_ONLY} Speak exactly this narration once, without adding, omitting, paraphrasing, repeating, "
         f"reordering, captioning, subtitling or visually transcribing any words: \"{vo}\"",
         f"Voice: {proposal['voice_block']}",
         f"{music_lock(n - 1, proposal['music'])} Voice-first mix. SFX: {d['sfx']}",
         f"Final frame: {d['final_frame']}",
-        f"{NO_TEXT} {UNIVERSAL_NEGATIVES} {style.negatives}",
+        f"{NO_TEXT} {GENERIC_NEGATIVES if settings.mode == 'generic' else UNIVERSAL_NEGATIVES} {style.negatives}",
     ]
     text = "\n".join(lines)
     return {"clip": n, "title": d.get("title") or f"Clip {n}", "prompt": text, "vo": vo, "stitch": d.get("stitch", ""),
@@ -80,7 +88,8 @@ def package(settings: DirectorSettings, proposal: dict, clips: list[dict]) -> di
     global_block = "\n".join(x for x in [
         f"Aspect ratio: {settings.aspect} · Duration: {settings.seconds}s ({settings.clips} clips of ~10s) · "
         f"Style: {style.name}",
-        f"Character anchor: {cast or character_anchor(settings.style, 0, settings.faceless)}",
+        f"{'People / subject anchors' if settings.mode == 'generic' else 'Character anchor'}: "
+        f"{cast or ('No recurring on-screen person' if settings.mode == 'generic' else character_anchor(settings.style, 0, settings.faceless))}",
         f"Palette / environment: {palette or '-'}; {style.environment}",
         f"Narrator: {proposal['voice_block']}",
         f"Music: {proposal['music']} (clip 1 establishes it; every later clip continues it identically)",
@@ -212,6 +221,9 @@ def markdown(plan: dict) -> str:
         if pkg.get("overlays"):
             out += ["### Post-production overlays", "",
                     *[f"- Clip {o['clip']}: “{o['text']}” ({o['placement']})" for o in pkg["overlays"]], ""]
-    out += ["---", "Planned with Stickman Director, based on Stickman Video Director "
-            "(https://github.com/kaomei/stickman-video-director, MIT License)."]
+    if s.mode == "generic":
+        out += ["---", "Planned with Video Director in Shortcut Studio."]
+    else:
+        out += ["---", "Planned with Stickman Director, based on Stickman Video Director "
+                "(https://github.com/kaomei/stickman-video-director, MIT License)."]
     return "\n".join(out)

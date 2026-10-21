@@ -73,10 +73,18 @@ Generated audio is saved in `backend/data/voice/`.
 
 ## AI model
 
-Highlights (New project → **AI model**) and Video Maker scripts and footage checks (**AI model** in step 1) can
-use Groq (gpt-oss-120b or the faster 20b), Google Gemini Flash, OpenRouter or SambaNova, each on its free tier.
-Services without a key in `backend/.env` are greyed out. The last choice is remembered in the browser and shared by
-both pages; **Default** uses `SHORTCUT_LLM_PROVIDER`.
+Highlights (New project → **AI model**), Video Maker scripts and footage checks, and Stickman Director plans can
+use Claude or DeepSeek through AgentRouter (`AGENTROUTER_CLAUDE_KEY`, `AGENTROUTER_DEEPSEEK_KEY`), DeepSeek with your
+personal key (`DEEPSEEK_API_KEY`), Groq (gpt-oss-120b or the faster 20b), Google
+Gemini Flash, OpenRouter or SambaNova. Services without a key in `backend/.env` are greyed out. The last choice is
+remembered in the browser and shared by the pages; **Default** uses `SHORTCUT_LLM_PROVIDER`.
+
+**Automatic** (the default once an AgentRouter key is set) tries **Claude → DeepSeek → Groq**
+(`SHORTCUT_AI_CHAIN`). A service that is outside its hours, out of quota, rate-limited or unreachable is skipped,
+with no further requests, until its recheck time (Claude 10 min, DeepSeek 3 min, or the rate limit's reset); the
+first request after that rechecks it, so work returns to Claude as soon as it answers. The picker shows where each
+service stands. Only when every service in the chain is down does the wait-or-switch dialog appear. Transcription
+stays on Groq Whisper (or local Whisper), since Claude and DeepSeek do not transcribe audio.
 
 ## Video Maker
 
@@ -91,14 +99,16 @@ both pages; **Default** uses `SHORTCUT_LLM_PROVIDER`.
    If the service hits a usage limit, you choose to wait (it retries when the limit frees up) or switch.
 3. **Voice**: Kokoro on this computer (free) or ElevenLabs. Narration is kept per scene, so a retry or remake does
    not record it again.
-4. **Footage**: tick any of Pixabay, Pexels, Coverr (free keys), Wikimedia Commons real-world and news video
-   (no key; graphic titles are filtered out) and Unsplash photos (free key, shown with a slow zoom); ffmpeg reads
+4. **Footage**: use live Openverse research, web image search through SearXNG or DuckDuckGo, YouTube search,
+   Pixabay, Pexels, Coverr (free keys), Wikimedia Commons real-world and news video (no key; graphic titles are
+   filtered out), and Unsplash photos (free key, shown with a slow zoom); ffmpeg reads
    only the seconds it needs. The footage review can also use **your own clips and images** (My uploads). A clip is used
    only when its site's description matches the scene's search (animation, cartoons, green screen and AI clips are
    left out), and an AI check of those descriptions against the narration drops off-topic ones. Searches are taken
    in the order the narration mentions things, so each shot matches what is being said. **Find footage** shows
-   every scene's shots before rendering: hover to preview, click to swap, search Pexels/Pixabay or photos, add or
-   remove shots. Scenes can also open with a **fact card** or **quote card** (quotes are kept only when they appear
+   every scene's shots before rendering: hover to preview, click to swap, search the live research sources, stock
+   sites or photos, add or remove shots. Web and YouTube results retain their source links and are marked for rights
+   review before publishing. Scenes can also open with a **fact card** or **quote card** (quotes are kept only when they appear
    word for word in your source) and show a free-licensed **photo of a named place** from Wikimedia Commons.
    Without a stock key, choose a plain coloured background. Credits (and photo licences) are listed per video.
 5. **Captions**: every caption style from the clipper, timed by Whisper on the narration and showing the script's own
@@ -111,6 +121,17 @@ both pages; **Default** uses `SHORTCUT_LLM_PROVIDER`.
    whole-file downloads: set `SHORTCUT_CONTACT` (your email or website).
 
 Videos are saved in `backend/data/videos/`, uploaded music in `backend/data/videos/music/`.
+
+## Video Director
+
+**Video Director** (top navigation, `/director`) turns a topic, script or article into a reviewed production plan for
+photorealistic videos with real people and real-world scenes. It uses the same proposal → approval → production-prompt
+workflow as Stickman Director, while keeping its projects and prompt rules separate.
+
+Choose a real-world visual mode based on the story's intent: **Logical Explainer**, **Modern Tech**, **Emotional Story**,
+**Educational Documentary**, **Real-World Satire** or **Cozy Lifestyle**. The generated plan preserves recurring people's
+identity, appearance, wardrobe and props across ten-second clips, provides three timed visual beats per clip, and exports
+ready-to-paste Google Flow prompts, a Markdown plan and English subtitles.
 
 ## Stickman Director
 
@@ -141,7 +162,11 @@ export them in your shell, which takes precedence. Restart the backend after cha
 | Variable | Default | Purpose |
 |---|---|---|
 | `SHORTCUT_DATA_DIR` | `backend/data` | SQLite DB and project media |
-| `SHORTCUT_LLM_PROVIDER` | `groq` | Highlight picker: `groq`, `gemini`, `openrouter` or `sambanova` |
+| `AGENTROUTER_CLAUDE_KEY` / `AGENTROUTER_DEEPSEEK_KEY` | unset | Claude and DeepSeek through AgentRouter (or `AGENTROUTER_API_KEY` for both); enables the automatic chain |
+| `DEEPSEEK_API_KEY` | unset | Your personal DeepSeek key (api.deepseek.com); a separate choice, not in the chain by default |
+| `AGENTROUTER_HEADERS` | unset | Extra client headers for AgentRouter, as a JSON object |
+| `SHORTCUT_LLM_PROVIDER` | `auto` with AgentRouter, else `groq` | `auto` (the chain) or one service: `claude`, `deepseek`, `groq`, `gemini`, `openrouter`, `sambanova` |
+| `SHORTCUT_AI_CHAIN` | `claude,deepseek,groq` | Order of the automatic chain |
 | `SHORTCUT_GROQ_LLM_MODEL` | `openai/gpt-oss-120b` | Groq model (must support strict JSON schema) |
 | `SHORTCUT_GROQ_TPM` | `8000` | Your Groq tier's tokens-per-minute limit; long transcripts are split to fit (`0` = never split) |
 | `SHORTCUT_TRANSCRIBER` | `groq` if `GROQ_API_KEY` is set, else `local` | Speech-to-text |
@@ -151,6 +176,7 @@ export them in your shell, which takes precedence. Restart the backend after cha
 | `PIXABAY_API_KEY` | unset | Pixabay stock footage in Video Maker (free at pixabay.com/api/docs) |
 | `COVERR_API_KEY` | unset | Coverr stock video in Video Maker (email team@coverr.co for a key) |
 | `UNSPLASH_ACCESS_KEY` | unset | Unsplash photos in Video Maker (unsplash.com/developers) |
+| `SEARXNG_URL` | unset | Optional private SearXNG endpoint for live web-image research; DuckDuckGo is the fallback |
 | `JAMENDO_CLIENT_ID` | unset | Jamendo music search in Video Maker (free at devportal.jamendo.com) |
 | `SHORTCUT_CONTACT` | unset | Your email or website, sent to Wikimedia Commons (and stock sites) as their API policy asks |
 | `SHORTCUT_KOKORO_MODEL` | `kokoro-v1.0.onnx` | Local voice model file (`kokoro-v1.0.int8.onnx` is smaller but slower on Apple Silicon) |
@@ -159,6 +185,10 @@ export them in your shell, which takes precedence. Restart the backend after cha
 | `SHORTCUT_WHISPER_COMPUTE` | `int8` | faster-whisper compute type |
 | `SHORTCUT_FFMPEG` / `SHORTCUT_FFPROBE` | on `PATH` | Tool paths |
 | `SHORTCUT_YT_DLP` | the venv's `yt-dlp` | Downloader; upgrade with `.venv/bin/pip install -U "yt-dlp[default]"` if YouTube returns 403 |
+
+The live research and candidate-search workflow is adapted from the MIT-licensed
+[ClipCut](https://github.com/adeebahmad01/clipcut); its license notice is kept in
+`backend/app/maker/CLIPCUT_LICENSE`.
 
 ## API
 

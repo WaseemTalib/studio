@@ -1,4 +1,4 @@
-"""Data for Stickman Director: the setup, the AI's structured answers, and a saved plan."""
+"""Shared director data for setup, structured AI answers, and saved plans."""
 
 from typing import Literal
 
@@ -14,10 +14,11 @@ STAGES_3 = ["Setup", "Escalation", "Ironic Payoff"]  # Style 3 story rhythm
 
 
 class DirectorSettings(BaseModel):
-    """What the skill's setup gate asks for."""
+    """Configuration collected before a director plan starts."""
 
     model_config = ConfigDict(extra="forbid")
 
+    mode: Literal["stickman", "generic"] = "stickman"
     source_kind: Literal["topic", "script", "article"] = "topic"
     source: str = Field(default="", max_length=40000)
     url: str | None = Field(default=None, max_length=2000)   # an article to read instead of / with the text
@@ -36,17 +37,13 @@ class DirectorSettings(BaseModel):
     def _tens(cls, v: int) -> int:  # the skill rounds to the nearest ten-second multiple
         return max(10, min(MAX_SECONDS, int(round(v / 10)) * 10))
 
-    @field_validator("style")
-    @classmethod
-    def _style(cls, v: str) -> str:
-        if v not in STYLES:
-            raise ValueError(f"unknown style {v!r}")
-        return v
-
     @model_validator(mode="after")
     def _has_source(self) -> "DirectorSettings":
         if not self.source.strip() and not self.url:
             raise ValueError("Give a topic, script or article (or an article link)")
+        style = STYLES.get(self.style)
+        if style is None or style.generic != (self.mode == "generic"):
+            raise ValueError(f"unknown {self.mode} style {self.style!r}")
         return self
 
     @property
@@ -66,7 +63,7 @@ class PaletteItem(BaseModel):
 
 class CastCard(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    role: str = Field(description="Short role name, e.g. 'Chief', 'Young hunter'")
+    role: str = Field(description="Short recurring subject or character name, e.g. 'Founder', 'Hero', 'Product'")
     anchor: str = Field(description="Complete English appearance description repeated verbatim in every prompt "
                                     "where the role appears: role and age range, proportions, hair, eyes/brows, "
                                     "costume silhouette, one recognizable accessory")
@@ -113,7 +110,7 @@ class ProposalHeader(BaseModel):
 class StoryRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
     clip: int
-    scene: str = Field(description="The stick-figure scene, in the planning language")
+    scene: str = Field(description="The scene, in the planning language")
     beats: list[str] = Field(description="Exactly three beats for 0-3s, 3-7s and 7-10s, in the planning language")
     devices: list[str] = Field(description="Visual devices used (at least four): action, transformation, metaphor, "
                                            "icon, particles/light, camera move, foreground wipe, match cut...")

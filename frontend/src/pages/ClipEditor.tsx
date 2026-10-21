@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { api, formatTime, type ClipDetail, type LookOptions, type Presets, type Word } from '../api'
+import {
+  api, DEFAULT_CAPTION_OFFSET, DEFAULT_CAPTION_SIZE, formatTime,
+  type ClipDetail, type LookOptions, type Presets, type Word,
+} from '../api'
 import LookControls, { layoutLabel } from '../components/LookControls'
 import { usePolling } from '../usePolling'
 
@@ -12,7 +15,8 @@ function lookFrom(clip: ClipDetail): LookOptions {
   return {
     aspect: o.aspect, layout: o.layout ?? 'auto', caption_style: o.caption_style,
     caption_position: o.caption_position, highlight_color: o.highlight_color,
-    words_per_line: o.words_per_line, caption_size: o.caption_size ?? 100, caption_offset: o.caption_offset ?? 0,
+    words_per_line: o.words_per_line, caption_size: o.caption_size ?? DEFAULT_CAPTION_SIZE,
+    caption_offset: o.caption_offset ?? DEFAULT_CAPTION_OFFSET,
     title_overlay: o.title_overlay,
     auto_zoom: o.auto_zoom ?? false, resolution: o.resolution ?? '1080p',
     ...clip.look,

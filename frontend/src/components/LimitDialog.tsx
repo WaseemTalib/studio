@@ -14,7 +14,7 @@ function amount(value: number | null, code: string | null): string {
 
 const STAGE: Record<string, string> = {
   transcribe: 'Transcription', highlights: 'Finding highlights', script: 'Writing the script',
-  captions: 'Caption timing', footage: 'Finding stock footage',
+  captions: 'Caption timing', footage: 'Finding stock footage', director: 'Writing the stickman plan',
 }
 
 function LimitFacts({ info, left }: { info: LimitInfo; left: number | null }) {

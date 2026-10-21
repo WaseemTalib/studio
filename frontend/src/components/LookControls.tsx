@@ -1,4 +1,8 @@
-import { captionPreviewUrl, type Aspect, type CaptionStyleInfo, type Layout, type LookOptions, type Position, type Presets, type Resolution } from '../api'
+import { useEffect, useState } from 'react'
+import {
+  captionPreviewUrl, DEFAULT_CAPTION_OFFSET, DEFAULT_CAPTION_SIZE,
+  type Aspect, type CaptionStyleInfo, type Layout, type LookOptions, type Position, type Presets, type Resolution,
+} from '../api'
 
 const SWATCHES = ['#04f827', '#fffd03', '#facc15', '#22d3ee', '#f472b6', '#8f2eed', '#fb923c', '#ffffff']
 
@@ -40,6 +44,10 @@ interface Props {
 
 export default function LookControls({ value, onChange, presets, sections = ['captions', 'layout', 'title'] }: Props) {
   const set = <K extends keyof LookOptions>(key: K, v: LookOptions[K]) => onChange({ ...value, [key]: v })
+  const captionStyles = [...presets.caption_styles, NO_CAPTIONS]
+  const selectedGroup = captionStyles.find((style) => style.id === value.caption_style)?.group ?? 'opus'
+  const [styleGroup, setStyleGroup] = useState<CaptionStyleInfo['group']>(selectedGroup)
+  useEffect(() => setStyleGroup(selectedGroup), [selectedGroup])
 
   return (
     <>
@@ -89,31 +97,33 @@ export default function LookControls({ value, onChange, presets, sections = ['ca
         <>
           <div className="field">
             <span>Caption style</span>
-            {STYLE_GROUPS.map((g) => {
-              const styles = [...presets.caption_styles, NO_CAPTIONS].filter((s) => s.group === g.id)
-              if (!styles.length) return null
-              return (
-                <div key={g.id} className="style-group">
-                  <span className="style-group-label">{g.label}</span>
-                  <div className="style-grid">
-                    {styles.map((s) => {
-                      const selected = value.caption_style === s.id
-                      return (
-                        <button type="button" key={s.id} className={`style-card ${selected ? 'on' : ''}`}
-                          onClick={() => onChange({ ...value, caption_style: s.id, highlight_color: s.highlight })}>
-                          {/* Each tile shows its own colours; the selected one shows the colour in use. */}
-                          <img src={captionPreviewUrl({
-                            ...value, caption_style: s.id, aspect: '9:16', title_overlay: false, caption_size: 100, caption_offset: 0,
-                            highlight_color: selected ? value.highlight_color : s.highlight,
-                          })} alt="" loading="lazy" />
-                          <span>{s.label}{s.animated && <em className="anim-badge">animated</em>}</span>
-                        </button>
-                      )
-                    })}
-                  </div>
-                </div>
-              )
-            })}
+            <div className="caption-style-picker">
+              <div className="segmented style-tabs" aria-label="Caption style groups">
+                {STYLE_GROUPS.map((group) => (
+                  <button type="button" key={group.id} className={styleGroup === group.id ? 'on' : ''}
+                    onClick={() => setStyleGroup(group.id)}>{group.label}</button>
+                ))}
+              </div>
+              <div className="style-grid">
+                {captionStyles.filter((style) => style.group === styleGroup).map((style) => {
+                  const selected = value.caption_style === style.id
+                  return (
+                    <button type="button" key={style.id} className={`style-card ${selected ? 'on' : ''}`}
+                      onClick={() => onChange({ ...value, caption_style: style.id, highlight_color: style.highlight })}>
+                      <img src={captionPreviewUrl({
+                        ...value, caption_style: style.id, aspect: '16:9', title_overlay: false,
+                        caption_size: 100, caption_offset: 0,
+                        highlight_color: selected ? value.highlight_color : style.highlight,
+                      })} alt="" loading="lazy" />
+                      <span className="style-card-copy">
+                        <strong>{style.label}</strong>
+                        {style.animated && <em className="anim-badge">Animated</em>}
+                      </span>
+                    </button>
+                  )
+                })}
+              </div>
+            </div>
           </div>
           <div className="field">
             <span>Highlight colour</span>
@@ -145,23 +155,25 @@ export default function LookControls({ value, onChange, presets, sections = ['ca
           <div className="row">
             <label className="field grow-field">
               <span>Caption size: {value.caption_size}%</span>
-              <input type="range" min={50} max={200} step={5} value={value.caption_size}
-                onChange={(e) => set('caption_size', Number(e.target.value))} />
+              <input type="range" min={0} max={150} step={1} value={value.caption_size}
+                onInput={(e) => set('caption_size', Number(e.currentTarget.value))} />
             </label>
             <label className="field grow-field">
               <span>
                 Move {value.caption_offset < 0 ? `up ${-value.caption_offset}%` : value.caption_offset > 0 ? `down ${value.caption_offset}%` : 'up or down'}
               </span>
               <span className="nudge">
-                <span className="muted small">↑ Up</span>
-                <input type="range" min={-30} max={30} step={1} value={value.caption_offset} aria-label="Move captions up or down"
-                  onChange={(e) => set('caption_offset', Number(e.target.value))} />
-                <span className="muted small">Down ↓</span>
+                <span className="muted small">↑ Up 100%</span>
+                <input type="range" min={-100} max={100} step={1} value={value.caption_offset} aria-label="Move captions up or down"
+                  onInput={(e) => set('caption_offset', Number(e.currentTarget.value))} />
+                <span className="muted small">Down 100% ↓</span>
               </span>
             </label>
-            {(value.caption_size !== 100 || value.caption_offset !== 0) && (
-              <button type="button" className="link align-end" onClick={() => onChange({ ...value, caption_size: 100, caption_offset: 0 })}>Reset</button>
-            )}
+            <button type="button" className="link align-end"
+              disabled={value.caption_size === DEFAULT_CAPTION_SIZE && value.caption_offset === DEFAULT_CAPTION_OFFSET}
+              onClick={() => onChange({ ...value, caption_size: DEFAULT_CAPTION_SIZE, caption_offset: DEFAULT_CAPTION_OFFSET })}>
+              Reset
+            </button>
           </div>
         </>
       )}

@@ -24,7 +24,7 @@ from .director import assemble as director_assemble, models as director_models, 
     styles as director_styles
 from .maker import footage, make, music, script, shots, uploads
 from .pipeline import limits, media, render, runner
-from .pipeline.highlights import HighlightError, default_service, highlight_options
+from .pipeline.highlights import HighlightError, chain_status, default_service, highlight_options
 from .pipeline.srt import SrtError, parse_srt
 from .schemas import (SOURCE_SPECIFIC_OPTIONS, AddLibraryVoice, ClipRender, ClipUpdate, DraftRequest, FootagePlanRequest,
                       LimitChoice, MusicTrack, footage_sources,
@@ -68,8 +68,8 @@ def caption_preview(
     position: Literal["top", "middle", "bottom"] = "bottom",
     aspect: Literal["9:16", "1:1", "16:9"] = "9:16",
     title: bool = False,
-    size: int = Query(100, ge=50, le=200),
-    offset: int = Query(0, ge=-30, le=30),
+    size: int = Query(50, ge=0, le=150),
+    offset: int = Query(12, ge=-100, le=100),
 ) -> Response:
     if style != presets.NO_CAPTIONS and style not in presets.CAPTION_STYLES:
         raise HTTPException(404, "Unknown caption style")
@@ -422,7 +422,11 @@ def ai_services() -> dict:
         default = default_service()
     except HighlightError:
         default = None
-    return {"services": [o.public() for o in highlight_options("")], "default": default}
+    chain = chain_status()
+    auto = {"id": "auto", "label": "Automatic: " + " → ".join(s["label"] for s in chain),
+            "detail": "Tries each in order, skipping one that is down and rechecking it later.",
+            "available": any(s["state"] != "no key" for s in chain), "reason": None}
+    return {"services": [auto, *[o.public() for o in highlight_options("")]], "default": default, "chain": chain}
 
 
 @app.get("/api/maker/options")
@@ -642,9 +646,9 @@ def _plan_live(plan: dict | None) -> dict | None:
     return None if plan is None else {**plan, **runner.live_status(plan["id"])}
 
 
-def _plan_or_404(pid: str) -> dict:
+def _plan_or_404(pid: str, mode: str | None = None) -> dict:
     plan = db.get_plan(pid)
-    if plan is None:
+    if plan is None or (mode and plan["settings"].get("mode", "stickman") != mode):
         raise HTTPException(404, "Plan not found")
     return plan
 
@@ -654,19 +658,19 @@ def _plan_idle(plan: dict) -> None:
         raise HTTPException(409, "This plan is still being written")
 
 
-@app.get("/api/director/options")
-def director_options() -> dict:
-    return {"styles": director_styles.public(), "max_seconds": director_models.MAX_SECONDS}
+def _director_options(mode: str) -> dict:
+    return {"styles": director_styles.public(mode), "max_seconds": director_models.MAX_SECONDS}
 
 
-@app.get("/api/director/plans")
-def director_plans() -> list[dict]:
-    return [{**p, **runner.live_status(p["id"])} for p in db.list_plans()]
+def _director_plans(mode: str) -> list[dict]:
+    return [{**p, **runner.live_status(p["id"])} for p in db.list_plans()
+            if p["settings"].get("mode", "stickman") == mode]
 
 
-@app.post("/api/director/plans", status_code=201)
-def director_create(body: director_models.DirectorSettings) -> dict:
+def _director_create(body: director_models.DirectorSettings, mode: str) -> dict:
     """Start a plan: the director's proposal (Phase A) is written first, for review."""
+    if body.mode != mode:
+        raise HTTPException(422, f"Expected {mode} director settings")
     pid = db.new_id()
     title = (body.source.strip().splitlines() or [body.url or "Untitled"])[0][:80] or "Untitled"
     db.create_plan(pid, title, body.model_dump())
@@ -674,19 +678,15 @@ def director_create(body: director_models.DirectorSettings) -> dict:
     return _plan_live(db.get_plan(pid))
 
 
-@app.get("/api/director/plans/{pid}")
-def director_get(pid: str) -> dict:
-    return _plan_live(_plan_or_404(pid))
-
-
-@app.post("/api/director/plans/{pid}/revise")
-def director_revise(pid: str, body: director_models.Revision) -> dict:
+def _director_revise(pid: str, body: director_models.Revision, mode: str) -> dict:
     """Recompose the proposal (whole, one clip, or with new global settings). Approval and prompts are
     invalidated, as in the skill."""
-    plan = _plan_or_404(pid)
+    plan = _plan_or_404(pid, mode)
     _plan_idle(plan)
     if body.clip and (not plan["proposal"] or body.clip > len(plan["proposal"]["clips"])):
         raise HTTPException(422, "No such clip in this proposal")
+    if body.settings and body.settings.mode != mode:
+        raise HTTPException(422, f"Expected {mode} director settings")
     fields: dict = {"status": "queued", "step": "proposal", "stage": None, "progress": 0, "error": None,
                     "approved": False, "package": None,
                     "revision": {"feedback": body.feedback, "clip": None if body.settings else body.clip}}
@@ -697,10 +697,9 @@ def director_revise(pid: str, body: director_models.Revision) -> dict:
     return _plan_live(db.get_plan(pid))
 
 
-@app.post("/api/director/plans/{pid}/approve")
-def director_approve(pid: str) -> dict:
+def _director_approve(pid: str, mode: str) -> dict:
     """Approve the current proposal and write the production prompts (Phase B)."""
-    plan = _plan_or_404(pid)
+    plan = _plan_or_404(pid, mode)
     _plan_idle(plan)
     if not plan["proposal"]:
         raise HTTPException(409, "There is no proposal to approve yet")
@@ -710,10 +709,9 @@ def director_approve(pid: str) -> dict:
     return _plan_live(db.get_plan(pid))
 
 
-@app.post("/api/director/plans/{pid}/clips/{clip}/rewrite")
-def director_rewrite_clip(pid: str, clip: int, body: director_models.Revision) -> dict:
+def _director_rewrite_clip(pid: str, clip: int, body: director_models.Revision, mode: str) -> dict:
     """Rewrite one clip's production prompt (Phase B) with feedback, keeping the others."""
-    plan = _plan_or_404(pid)
+    plan = _plan_or_404(pid, mode)
     _plan_idle(plan)
     if not plan["approved"] or not plan["package"]:
         raise HTTPException(409, "Approve the proposal and write the prompts first")
@@ -725,9 +723,8 @@ def director_rewrite_clip(pid: str, clip: int, body: director_models.Revision) -
     return _plan_live(db.get_plan(pid))
 
 
-@app.post("/api/director/plans/{pid}/cancel")
-def director_cancel(pid: str) -> dict:
-    plan = _plan_or_404(pid)
+def _director_cancel(pid: str, mode: str) -> dict:
+    plan = _plan_or_404(pid, mode)
     if plan["status"] not in ("queued", "processing"):
         raise HTTPException(409, "Nothing is being written for this plan")
     if not runner.cancel_project(pid):
@@ -735,18 +732,16 @@ def director_cancel(pid: str) -> dict:
     return _plan_live(db.get_plan(pid))
 
 
-@app.post("/api/director/plans/{pid}/retry")
-def director_retry(pid: str) -> dict:
-    plan = _plan_or_404(pid)
+def _director_retry(pid: str, mode: str) -> dict:
+    plan = _plan_or_404(pid, mode)
     _plan_idle(plan)
     db.update_plan(pid, status="queued", stage=None, progress=0, error=None)
     director_plan.submit(pid, plan["step"])
     return _plan_live(db.get_plan(pid))
 
 
-@app.post("/api/director/plans/{pid}/limit-choice")
-def director_limit_choice(pid: str, body: LimitChoice) -> dict:
-    _plan_or_404(pid)
+def _director_limit_choice(pid: str, body: LimitChoice, mode: str) -> dict:
+    _plan_or_404(pid, mode)
     try:
         runner.choose_on_limit(pid, body.action, body.option)
     except ValueError as e:
@@ -754,25 +749,206 @@ def director_limit_choice(pid: str, body: LimitChoice) -> dict:
     return _plan_live(db.get_plan(pid))
 
 
-@app.delete("/api/director/plans/{pid}", status_code=204)
-def director_delete(pid: str) -> None:
-    _plan_idle(_plan_or_404(pid))
+def _director_delete(pid: str, mode: str) -> None:
+    _plan_idle(_plan_or_404(pid, mode))
     db.delete_plan(pid)
 
 
-@app.get("/api/director/plans/{pid}/export.md")
-def director_export_md(pid: str) -> Response:
-    plan = _plan_or_404(pid)
-    name = _safe_name(plan["title"], "stickman plan")
+def _director_export_md(pid: str, mode: str) -> Response:
+    plan = _plan_or_404(pid, mode)
+    name = _safe_name(plan["title"], "video plan" if mode == "generic" else "stickman plan")
     return Response(director_assemble.markdown(plan), media_type="text/markdown; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{name}.md"'})
 
 
-@app.get("/api/director/plans/{pid}/subtitles.srt")
-def director_export_srt(pid: str) -> Response:
-    plan = _plan_or_404(pid)
+def _director_export_srt(pid: str, mode: str) -> Response:
+    plan = _plan_or_404(pid, mode)
     if not plan["proposal"]:
         raise HTTPException(404, "No proposal yet")
-    name = _safe_name(plan["title"], "stickman plan")
+    name = _safe_name(plan["title"], "video plan" if mode == "generic" else "stickman plan")
     return Response(director_assemble.srt(plan["proposal"]), media_type="application/x-subrip; charset=utf-8",
                     headers={"Content-Disposition": f'attachment; filename="{name}.srt"'})
+
+
+@app.get("/api/director/options")
+def director_options() -> dict:
+    return _director_options("stickman")
+
+
+@app.get("/api/director/plans")
+def director_plans() -> list[dict]:
+    return _director_plans("stickman")
+
+
+@app.post("/api/director/plans", status_code=201)
+def director_create(body: director_models.DirectorSettings) -> dict:
+    return _director_create(body, "stickman")
+
+
+@app.get("/api/director/plans/{pid}")
+def director_get(pid: str) -> dict:
+    return _plan_live(_plan_or_404(pid, "stickman"))
+
+
+@app.post("/api/director/plans/{pid}/revise")
+def director_revise(pid: str, body: director_models.Revision) -> dict:
+    return _director_revise(pid, body, "stickman")
+
+
+@app.post("/api/director/plans/{pid}/approve")
+def director_approve(pid: str) -> dict:
+    return _director_approve(pid, "stickman")
+
+
+@app.post("/api/director/plans/{pid}/clips/{clip}/rewrite")
+def director_rewrite_clip(pid: str, clip: int, body: director_models.Revision) -> dict:
+    return _director_rewrite_clip(pid, clip, body, "stickman")
+
+
+@app.post("/api/director/plans/{pid}/cancel")
+def director_cancel(pid: str) -> dict:
+    return _director_cancel(pid, "stickman")
+
+
+@app.post("/api/director/plans/{pid}/retry")
+def director_retry(pid: str) -> dict:
+    return _director_retry(pid, "stickman")
+
+
+@app.post("/api/director/plans/{pid}/limit-choice")
+def director_limit_choice(pid: str, body: LimitChoice) -> dict:
+    return _director_limit_choice(pid, body, "stickman")
+
+
+@app.delete("/api/director/plans/{pid}", status_code=204)
+def director_delete(pid: str) -> None:
+    _director_delete(pid, "stickman")
+
+
+@app.get("/api/director/plans/{pid}/export.md")
+def director_export_md(pid: str) -> Response:
+    return _director_export_md(pid, "stickman")
+
+
+@app.get("/api/director/plans/{pid}/subtitles.srt")
+def director_export_srt(pid: str) -> Response:
+    return _director_export_srt(pid, "stickman")
+
+
+@app.get("/api/video-director/options")
+def video_director_options() -> dict:
+    return _director_options("generic")
+
+
+@app.get("/api/video-director/plans")
+def video_director_plans() -> list[dict]:
+    return _director_plans("generic")
+
+
+@app.post("/api/video-director/plans", status_code=201)
+def video_director_create(body: director_models.DirectorSettings) -> dict:
+    return _director_create(body, "generic")
+
+
+@app.get("/api/video-director/plans/{pid}")
+def video_director_get(pid: str) -> dict:
+    return _plan_live(_plan_or_404(pid, "generic"))
+
+
+@app.post("/api/video-director/plans/{pid}/revise")
+def video_director_revise(pid: str, body: director_models.Revision) -> dict:
+    return _director_revise(pid, body, "generic")
+
+
+@app.post("/api/video-director/plans/{pid}/approve")
+def video_director_approve(pid: str) -> dict:
+    return _director_approve(pid, "generic")
+
+
+@app.post("/api/video-director/plans/{pid}/clips/{clip}/rewrite")
+def video_director_rewrite_clip(pid: str, clip: int, body: director_models.Revision) -> dict:
+    return _director_rewrite_clip(pid, clip, body, "generic")
+
+
+@app.post("/api/video-director/plans/{pid}/cancel")
+def video_director_cancel(pid: str) -> dict:
+    return _director_cancel(pid, "generic")
+
+
+@app.post("/api/video-director/plans/{pid}/retry")
+def video_director_retry(pid: str) -> dict:
+    return _director_retry(pid, "generic")
+
+
+@app.post("/api/video-director/plans/{pid}/limit-choice")
+def video_director_limit_choice(pid: str, body: LimitChoice) -> dict:
+    return _director_limit_choice(pid, body, "generic")
+
+
+@app.delete("/api/video-director/plans/{pid}", status_code=204)
+def video_director_delete(pid: str) -> None:
+    _director_delete(pid, "generic")
+
+
+@app.get("/api/video-director/plans/{pid}/export.md")
+def video_director_export_md(pid: str) -> Response:
+    return _director_export_md(pid, "generic")
+
+
+@app.get("/api/video-director/plans/{pid}/subtitles.srt")
+def video_director_export_srt(pid: str) -> Response:
+    return _director_export_srt(pid, "generic")
+
+
+# --- Active tasks -------------------------------------------------------------------------------
+
+
+def _task_summary(kind: str, item: dict) -> dict:
+    live = runner.live_status(item["id"])
+    return {
+        "kind": kind,
+        "id": item["id"],
+        "title": item["title"],
+        "status": item["status"],
+        "stage": item["stage"],
+        "progress": item["progress"],
+        "created_at": item["created_at"],
+        "updated_at": item["updated_at"],
+        **live,
+    }
+
+
+@app.get("/api/tasks")
+def tasks() -> list[dict]:
+    """Running jobs and the latest completed jobs for the persistent task display."""
+    tasks = [
+        *(_task_summary("shorts", item) for item in db.list_projects()
+          if item["status"] in ("queued", "processing", "done")),
+        *(_task_summary("video-maker", item) for item in db.list_videos()
+          if item["status"] in ("queued", "processing", "done")),
+        *(_task_summary(
+            "video-director" if item["settings"].get("mode", "stickman") == "generic" else "stickman-director",
+            item,
+        ) for item in db.list_plans() if item["status"] in ("queued", "processing", "done")),
+    ]
+    running = sorted((item for item in tasks if item["status"] != "done"),
+                     key=lambda item: item["created_at"], reverse=True)
+    completed = sorted((item for item in tasks if item["status"] == "done"),
+                       key=lambda item: item["updated_at"], reverse=True)[:4]
+    return [*running, *completed]
+
+
+@app.post("/api/tasks/{kind}/{task_id}/cancel", status_code=204)
+def cancel_active_task(
+    kind: Literal["shorts", "video-maker", "video-director", "stickman-director"], task_id: str,
+) -> Response:
+    """Cancel a task from the persistent progress display using its owning workflow."""
+    if kind == "shorts":
+        cancel_project(task_id)
+    elif kind == "video-maker":
+        maker_cancel(task_id)
+    elif kind == "video-director":
+        _director_cancel(task_id, "generic")
+    else:
+        _director_cancel(task_id, "stickman")
+    return Response(status_code=204)

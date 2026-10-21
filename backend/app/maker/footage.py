@@ -1,5 +1,6 @@
-"""Free stock media for the video maker: video from Pixabay, Pexels and Coverr (free API keys), real-world
-video and photos from Wikimedia Commons (no key), and photos from Unsplash (free key).
+"""Searchable media for the video maker: live web research through Openverse, optional SearXNG or
+DuckDuckGo, and YouTube; stock video from Pixabay, Pexels and Coverr; real-world video and photos
+from Wikimedia Commons; and photos from Unsplash.
 
 Every result is scored against the search words using the site's own description of it
 (Pixabay and Coverr tags, the Pexels page name, the Commons file name, the Unsplash description), so a
@@ -12,20 +13,24 @@ Clips are not downloaded whole: ffmpeg reads only the seconds a shot uses (see m
 """
 
 import html
+import hashlib
+import json
 import os
 import re
+import shutil
 import threading
 import time
 from dataclasses import asdict, dataclass
+from urllib.parse import urljoin, urlparse
 
 import requests
 
-from ..config import CONTACT, COVERR_API_KEY, PEXELS_API_KEY, PIXABAY_API_KEY, UNSPLASH_ACCESS_KEY
-from ..pipeline import limits
+from ..config import CONTACT, COVERR_API_KEY, PEXELS_API_KEY, PIXABAY_API_KEY, SEARXNG_URL, UNSPLASH_ACCESS_KEY, YT_DLP
+from ..pipeline import limits, media
 
 PER_PAGE = {"pexels": 40, "pixabay": 50, "coverr": 40, "unsplash": 30}
 # Searchable sources, in the order their results are preferred when equally relevant.
-SOURCES = ("pixabay", "pexels", "coverr", "commons", "unsplash")
+SOURCES = ("openverse", "web", "youtube", "commons", "pixabay", "pexels", "coverr", "unsplash")
 SIGNUP = {"pexels": "pexels.com/api", "pixabay": "pixabay.com/api/docs", "coverr": "email team@coverr.co",
           "unsplash": "unsplash.com/developers"}
 KEY_NAME = {"pexels": "PEXELS_API_KEY", "pixabay": "PIXABAY_API_KEY", "coverr": "COVERR_API_KEY",
@@ -59,7 +64,7 @@ class FootageError(RuntimeError):
 
 @dataclass(frozen=True)
 class StockClip:
-    provider: str            # pixabay | pexels | coverr | commons (video) | wikimedia (photo) | unsplash | upload
+    provider: str            # research, stock, Commons, Unsplash or uploaded media provider
     id: str
     link: str                # the mp4 file, or the photo
     width: int
@@ -87,7 +92,9 @@ class StockClip:
 
 
 def available() -> dict[str, bool]:
-    return {"pixabay": bool(PIXABAY_API_KEY), "pexels": bool(PEXELS_API_KEY), "coverr": bool(COVERR_API_KEY),
+    return {"openverse": True, "web": True,
+            "youtube": bool(shutil.which(YT_DLP) or os.path.isfile(YT_DLP)),
+            "pixabay": bool(PIXABAY_API_KEY), "pexels": bool(PEXELS_API_KEY), "coverr": bool(COVERR_API_KEY),
             "commons": True, "unsplash": bool(UNSPLASH_ACCESS_KEY)}
 
 
@@ -97,9 +104,10 @@ def providers_for(wanted: list[str]) -> list[str]:
     usable = [p for p in SOURCES if p in wanted and have[p]]
     missing = [p for p in wanted if not have.get(p)]
     if wanted and not usable:
-        names = " and ".join(KEY_NAME[p] for p in missing)
-        raise FootageError(f"Those footage sources need {names} in backend/.env "
-                           f"({', '.join(SIGNUP[p] for p in missing)}), or choose another source")
+        names = " and ".join(KEY_NAME.get(p, p) for p in missing)
+        links = ", ".join(SIGNUP[p] for p in missing if p in SIGNUP)
+        detail = f" in backend/.env ({links})" if links else ""
+        raise FootageError(f"Those footage sources need {names}{detail}, or choose another source")
     return usable
 
 
@@ -171,6 +179,12 @@ def search(provider: str, term: str, orientation: str, short_side: int, page: in
         found = _unsplash(term, orientation, page)
     elif provider == "wikimedia":
         found = _wikimedia(term, page)
+    elif provider == "openverse":
+        found = _openverse(term, page)
+    elif provider == "web":
+        found = _web_images(term)
+    elif provider == "youtube":
+        found = _youtube(term)
     else:
         raise FootageError(f"Unknown footage source {provider!r}")
     want_wide, want_tall = orientation == "landscape", orientation == "portrait"
@@ -199,6 +213,138 @@ def _get(provider: str, url: str, params: dict, headers: dict) -> dict:
     if r.status_code >= 400:
         raise FootageError(f"{limits.SERVICE_LABELS[provider]} error {r.status_code}: {r.text[:200]}")
     return r.json()
+
+
+def _http_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+        return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    except ValueError:
+        return False
+
+
+def _media_id(url: str) -> str:
+    return hashlib.sha256(url.encode()).hexdigest()[:20]
+
+
+def _openverse(term: str, page: int) -> list[StockClip]:
+    data = _get("openverse", "https://api.openverse.org/v1/images/",
+                {"q": term, "page": page, "page_size": 20, "license": "cc0,pdm,by,by-sa"}, {})
+    out = []
+    for item in data.get("results") or []:
+        link = item.get("url") or ""
+        page_url = item.get("foreign_landing_url") or item.get("detail_url") or link
+        width, height = int(item.get("width") or 0), int(item.get("height") or 0)
+        if not _http_url(link) or not _http_url(page_url) or min(width, height) < 500:
+            continue
+        title = str(item.get("title") or term)
+        creator = str(item.get("creator") or "")
+        license_name = str(item.get("license") or "Creative Commons").upper()
+        out.append(StockClip("openverse", str(item.get("id") or _media_id(link)), link, width, height, 0.0,
+                             page_url, creator, thumb=item.get("thumbnail") or link,
+                             text=" ".join(x for x in (title, creator) if x), kind="photo", license=license_name))
+    return out
+
+
+def _web_images(term: str) -> list[StockClip]:
+    errors = []
+    if SEARXNG_URL and _http_url(SEARXNG_URL):
+        try:
+            found = _searxng_images(term)
+            if found:
+                return found
+        except FootageError as e:
+            errors.append(str(e))
+    try:
+        return _duckduckgo_images(term)
+    except FootageError as e:
+        errors.append(str(e))
+    try:
+        return _openverse(term, 1)
+    except (FootageError, limits.LimitReached) as e:
+        errors.append(str(e))
+    raise FootageError("Live web image search failed" + (f": {'; '.join(errors)}" if errors else ""))
+
+
+def _searxng_images(term: str) -> list[StockClip]:
+    data = _get("searxng", f"{SEARXNG_URL}/search",
+                {"q": term, "format": "json", "categories": "images", "language": "en", "safesearch": 1}, {})
+    out = []
+    for item in data.get("results") or []:
+        raw = str(item.get("img_src") or "")
+        link = urljoin(SEARXNG_URL + "/", raw)
+        page_url = urljoin(SEARXNG_URL + "/", str(item.get("url") or link))
+        if not _http_url(link) or not _http_url(page_url):
+            continue
+        size = re.search(r"(\d{2,5})\s*[x×]\s*(\d{2,5})", str(item.get("resolution") or item.get("content") or ""))
+        width, height = (int(size.group(1)), int(size.group(2))) if size else (1280, 720)
+        title = str(item.get("title") or term)
+        thumb = urljoin(SEARXNG_URL + "/", str(item.get("thumbnail_src") or item.get("thumbnail") or link))
+        out.append(StockClip("searxng", _media_id(link), link, width, height, 0.0, page_url,
+                             urlparse(page_url).netloc, thumb=thumb, text=title, kind="photo",
+                             license="Rights unknown — verify before publishing"))
+    return out
+
+
+def _duckduckgo_images(term: str) -> list[StockClip]:
+    try:
+        token_page = requests.get("https://duckduckgo.com/", params={"q": term, "ia": "images", "iax": "images"},
+                                  headers={"User-Agent": USER_AGENT}, timeout=20)
+        token_page.raise_for_status()
+        match = re.search(r'''vqd=["']?([\d-]+)''', token_page.text)
+        if not match:
+            raise FootageError("DuckDuckGo did not return a search token")
+        response = requests.get("https://duckduckgo.com/i.js",
+                                params={"l": "us-en", "o": "json", "q": term, "vqd": match.group(1), "p": "1"},
+                                headers={"User-Agent": USER_AGENT, "Referer": "https://duckduckgo.com/",
+                                         "Accept": "application/json, text/javascript, */*; q=0.01",
+                                         "X-Requested-With": "XMLHttpRequest"}, timeout=25)
+        response.raise_for_status()
+        data = response.json()
+    except (requests.RequestException, ValueError) as e:
+        raise FootageError("Could not reach DuckDuckGo image search") from e
+    out = []
+    for item in data.get("results") or []:
+        link, page_url = str(item.get("image") or ""), str(item.get("url") or "")
+        if not _http_url(link) or not _http_url(page_url):
+            continue
+        width, height = int(item.get("width") or 0), int(item.get("height") or 0)
+        title = str(item.get("title") or term)
+        out.append(StockClip("duckduckgo", _media_id(link), link, width or 1280, height or 720, 0.0,
+                             page_url, urlparse(page_url).netloc, thumb=item.get("thumbnail") or link,
+                             text=title, kind="photo", license="Rights unknown — verify before publishing"))
+    return out
+
+
+def _youtube(term: str) -> list[StockClip]:
+    try:
+        output = media.run([YT_DLP, "--no-warnings", "--ignore-config", "--no-plugin-dirs", "--socket-timeout", "10",
+                            "--retries", "1", "--extractor-retries", "1", "--flat-playlist", "--dump-json",
+                            f"ytsearch12:{term}"])
+    except media.MediaError as e:
+        raise FootageError("YouTube search failed; update yt-dlp or check the connection") from e
+    out = []
+    for line in output.splitlines():
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        video_id = str(item.get("id") or "")
+        duration = float(item.get("duration") or 0)
+        live = item.get("is_live") or item.get("live_status") in ("is_live", "is_upcoming", "post_live")
+        if not re.fullmatch(r"[A-Za-z0-9_-]{11}", video_id) or live or duration < 2 or duration > 40 * 60:
+            continue
+        page_url = f"https://www.youtube.com/watch?v={video_id}"
+        title = str(item.get("title") or term)
+        channel = str(item.get("channel") or item.get("uploader") or "")
+        thumbs = item.get("thumbnails") or []
+        thumb = max(thumbs, key=lambda t: int(t.get("width") or 0)).get("url") if thumbs else ""
+        thumb = thumb or item.get("thumbnail") or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
+        out.append(StockClip("youtube", video_id, page_url, int(item.get("width") or 1280),
+                             int(item.get("height") or 720), min(duration, 30.0), page_url, channel,
+                             thumb=thumb, text=" ".join(x for x in (title, channel) if x),
+                             license="Rights unknown — verify before publishing"))
+    return out
 
 
 def _limit(provider: str, r: requests.Response) -> limits.Limit:

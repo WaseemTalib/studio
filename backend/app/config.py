@@ -16,9 +16,31 @@ PROJECTS_DIR = DATA_DIR / "projects"
 
 _HAS_GROQ = bool(os.environ.get("GROQ_API_KEY"))
 
-# Highlight picking, all with free tiers: "groq", "gemini", "openrouter" or "sambanova". When a service
-# hits a usage limit, the project pauses and asks whether to wait or switch; it never switches by itself.
-LLM_PROVIDER = os.environ.get("SHORTCUT_LLM_PROVIDER", "groq")
+# Claude and DeepSeek through AgentRouter (agentrouter.org), OpenAI-compatible. Requests identify as Shortcut
+# Studio; AGENTROUTER_HEADERS (JSON) adds any client headers AgentRouter asked you to send.
+AGENTROUTER_API_KEY = os.environ.get("AGENTROUTER_API_KEY", "")  # one key for both, if you have only one
+AGENTROUTER_CLAUDE_KEY = os.environ.get("AGENTROUTER_CLAUDE_KEY", "") or AGENTROUTER_API_KEY
+AGENTROUTER_DEEPSEEK_KEY = os.environ.get("AGENTROUTER_DEEPSEEK_KEY", "") or AGENTROUTER_API_KEY
+AGENTROUTER_BASE_URL = os.environ.get("AGENTROUTER_BASE_URL", "https://agentrouter.org/v1").rstrip("/")
+AGENTROUTER_HEADERS = os.environ.get("AGENTROUTER_HEADERS", "")
+CLAUDE_MODEL = os.environ.get("SHORTCUT_CLAUDE_MODEL", "")      # empty: the newest Claude Sonnet offered
+DEEPSEEK_MODEL = os.environ.get("SHORTCUT_DEEPSEEK_MODEL", "")  # empty: the newest DeepSeek chat model offered
+# Your own DeepSeek key (platform.deepseek.com, pay as you go), separate from AgentRouter.
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
+DEEPSEEK_API_BASE = os.environ.get("SHORTCUT_DEEPSEEK_API_BASE", "https://api.deepseek.com").rstrip("/")
+DEEPSEEK_API_MODEL = os.environ.get("SHORTCUT_DEEPSEEK_API_MODEL", "deepseek-chat")
+
+# The AI for highlights, scripts and plans. "auto" tries SHORTCUT_AI_CHAIN in order (default Claude →
+# DeepSeek → Groq), skipping a service that is down and rechecking it later; or name one service: "groq",
+# "gemini", "openrouter", "sambanova", "claude" or "deepseek". A named service that hits a usage limit pauses
+# and asks whether to wait or switch.
+LLM_PROVIDER = os.environ.get("SHORTCUT_LLM_PROVIDER",
+                              "auto" if AGENTROUTER_CLAUDE_KEY or AGENTROUTER_DEEPSEEK_KEY else "groq")
+AI_CHAIN = [s.strip() for s in os.environ.get("SHORTCUT_AI_CHAIN", "claude,deepseek,groq").split(",") if s.strip()]
+# Minutes before a service that failed is tried again (Claude is often limited to certain hours).
+RECHECK_MINUTES = {"claude": float(os.environ.get("SHORTCUT_CLAUDE_RECHECK_MINUTES", "10")),
+                   "deepseek": float(os.environ.get("SHORTCUT_DEEPSEEK_RECHECK_MINUTES", "3")),
+                   "deepseek-api": float(os.environ.get("SHORTCUT_DEEPSEEK_RECHECK_MINUTES", "3"))}
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("SHORTCUT_GEMINI_MODEL", "")  # empty: the newest Flash model on the account
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "")
@@ -51,6 +73,8 @@ PEXELS_API_KEY = os.environ.get("PEXELS_API_KEY", "")
 PIXABAY_API_KEY = os.environ.get("PIXABAY_API_KEY", "")
 COVERR_API_KEY = os.environ.get("COVERR_API_KEY", "")            # stock video; ask team@coverr.co for a key
 UNSPLASH_ACCESS_KEY = os.environ.get("UNSPLASH_ACCESS_KEY", "")  # photos; unsplash.com/developers
+# Optional private search endpoint. Live web-image search falls back to DuckDuckGo when this is unset or unavailable.
+SEARXNG_URL = os.environ.get("SEARXNG_URL", "").strip().rstrip("/")
 JAMENDO_CLIENT_ID = os.environ.get("JAMENDO_CLIENT_ID", "")  # free music search (devportal.jamendo.com)
 # Your email or website, sent to Wikimedia Commons with each request as its User-Agent policy asks;
 # without it Commons may refuse downloads of whole music files.

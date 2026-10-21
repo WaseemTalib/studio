@@ -117,7 +117,7 @@ class Look:
     highlight: str
     title: str | None
     scale: float = 1.0    # caption font size relative to the style's own
-    offset: float = 0.0   # nudge from the position, as a fraction of the frame height; negative is up
+    offset: float = 0.0   # signed share of the available vertical travel; -1 is top and 1 is bottom
 
     def highlight_for(self, alt: bool) -> str:
         """Alternate captions switch to the style's second colour, unless the user picked their own."""
@@ -224,6 +224,8 @@ def _caption_layer(size: tuple[int, int], words: list[str], active: int | None, 
     style = look.style
     width, height = size
     layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    if look.scale <= 0:
+        return layer
     draw = ImageDraw.Draw(layer)
     if style.uppercase:
         words = [w.upper() for w in words]
@@ -263,15 +265,19 @@ def _caption_layer(size: tuple[int, int], words: list[str], active: int | None, 
     font, fonts, space, widths, lines, totals = fit(int(width * style.size), style.max_lines)
     if look.scale != 1.0:
         # The chosen size scales the size the style would show; larger text may wrap onto extra lines.
-        font, fonts, space, widths, lines, totals = fit(max(24, int(font.size * look.scale)),
+        font, fonts, space, widths, lines, totals = fit(max(1, int(font.size * look.scale)),
                                                         max(style.max_lines, MAX_SCALED_LINES))
 
     ascent, descent = font.getmetrics()
     line_h = int((ascent + descent) * 0.95)
-    center_y = int(height * (POSITION_Y[look.position] + look.offset))
-    top = center_y - (line_h * (len(lines) - 1) + ascent) // 2
     block_h = line_h * (len(lines) - 1) + ascent + descent
-    top = max(int(height * 0.03), min(top, int(height * 0.97) - block_h))  # never pushed out of the frame
+    min_top, max_top = int(height * 0.03), int(height * 0.97) - block_h
+    base_top = int(height * POSITION_Y[look.position]) - (line_h * (len(lines) - 1) + ascent) // 2
+    if look.offset < 0:
+        top = round(base_top + (base_top - min_top) * look.offset)
+    else:
+        top = round(base_top + (max_top - base_top) * look.offset)
+    top = max(min_top, min(top, max_top))
     if phase is not None and style.animation == "rise":
         top += int(font.size * RISE_OFFSETS[phase])
     pad = font.size // 5
@@ -362,7 +368,11 @@ def _title_layer(size: tuple[int, int], look: Look, phase: int | None) -> Image.
     line_h = ascent + descent + gap
     top = int(height * (0.08 if look.position != "top" else 0.04))
     if look.position == "top":
-        top = int(height * (POSITION_Y["top"] + look.offset) + font.size * 1.4)  # below the captions
+        anchor = POSITION_Y["top"]
+        edge = 0.03 if look.offset < 0 else 0.97
+        caption_center = anchor + (edge - anchor) * abs(look.offset)
+        top = int(height * caption_center + font.size * 1.4)  # below the captions
+        top = max(int(height * 0.03), min(top, int(height * 0.97) - line_h * len(lines)))
 
     for n, line in enumerate(lines):
         tw = draw.textlength(line, font=font)
@@ -896,6 +906,8 @@ def preview(style_id: str, highlight: str, position: str, aspect: Aspect, title:
             size: int = 100, offset: int = 0) -> Image.Image:
     """Sample frame for the style picker, drawn by the same code as real clips."""
     width, height = output_size(aspect)
+    preview_scale = min(360 / width, 640 / height)
+    width, height = round(width * preview_scale), round(height * preview_scale)
     style = None if style_id == NO_CAPTIONS else CAPTION_STYLES[style_id]
     bg = Image.new("RGBA", (width, height))
     top, bottom = (52, 64, 85), (15, 23, 42)

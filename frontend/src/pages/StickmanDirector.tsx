@@ -5,8 +5,8 @@ import { rememberedService, useAIServices } from '../aiServices'
 import AIModelSelect from '../components/AIModelSelect'
 import { LimitDialog, LimitLine } from '../components/LimitDialog'
 import {
-  DIRECTOR_STAGE, directorApi, DURATIONS, formatSeconds, isWriting, PLAN_LANGUAGES,
-  type Check, type DirectorSettings, type DirectorStyle, type Package, type Plan, type Proposal,
+  DIRECTOR_STAGE, directorApi, DURATIONS, formatSeconds, isWriting, PLAN_LANGUAGES, videoDirectorApi,
+  type Check, type DirectorApi, type DirectorSettings, type DirectorStyle, type Package, type Plan, type Proposal,
 } from '../directorApi'
 import { usePolling } from '../usePolling'
 
@@ -28,101 +28,135 @@ const VOICES: { id: DirectorSettings['voice']; label: string }[] = [
   { id: 'custom', label: 'Describe my own…' },
 ]
 
-export default function StickmanDirector() {
+export default function StickmanDirector({ mode = 'stickman' }: { mode?: 'stickman' | 'generic' }) {
+  const generic = mode === 'generic'
+  const api = generic ? videoDirectorApi : directorApi
   const [params, setParams] = useSearchParams()
   const selected = params.get('plan')
+  const [creating, setCreating] = useState(false)
   const [styles, setStyles] = useState<DirectorStyle[]>([])
   const [plans, setPlans] = useState<Plan[]>([])
   const [plan, setPlan] = useState<Plan | null>(null)
   const [error, setError] = useState<string | null>(null)
   const services = useAIServices()
 
-  const loadPlans = useCallback(() => directorApi.plans().then(setPlans, (e: Error) => setError(e.message)), [])
+  const loadPlans = useCallback(() => api.plans().then(setPlans, (e: Error) => setError(e.message)), [api])
   const loadPlan = useCallback(() => {
-    if (selected) directorApi.get(selected).then(setPlan, (e: Error) => setError(e.message))
-  }, [selected])
+    if (selected) api.get(selected).then(setPlan, (e: Error) => setError(e.message))
+  }, [api, selected])
   useEffect(() => {
-    directorApi.options().then((o) => setStyles(o.styles), (e: Error) => setError(e.message))
+    api.options().then((o) => setStyles(o.styles), (e: Error) => setError(e.message))
     loadPlans()
-  }, [loadPlans])
+  }, [api, loadPlans])
   useEffect(() => {
     setPlan(null)
     loadPlan()
   }, [loadPlan])
   usePolling(() => { loadPlan(); loadPlans() }, 1500, !!plan && isWriting(plan))
 
-  const open = (id: string | null) => setParams(id ? { plan: id } : {})
+  const open = (id: string | null) => {
+    setCreating(false)
+    setParams(id ? { plan: id } : {})
+  }
+  const startProject = () => {
+    setPlan(null)
+    setParams({})
+    setCreating(true)
+  }
   const update = (p: Plan) => {
     setPlan(p)
     loadPlans()
   }
 
+  const planList = (
+    <>
+      <div className="section-title-row">
+        <strong>Projects</strong>
+        {(selected || creating) && <button className="small-btn" onClick={startProject}>+ Create project</button>}
+      </div>
+      {!plans.length && <p className="muted small">No projects yet. Create one to write your first plan.</p>}
+      <ul className="plan-list">
+        {plans.map((p) => (
+          <li key={p.id} className={p.id === selected ? 'on' : ''}>
+            <button type="button" className="plan-item" onClick={() => open(p.id)}>
+              <strong>{p.title}</strong>
+              <span className="muted small">
+                {styles.find((s) => s.id === p.settings.style)?.short ?? p.settings.style} · {p.settings.aspect} · {formatSeconds(p.settings.seconds)}
+                {' · '}{isWriting(p) ? 'writing…' : p.status === 'failed' ? 'failed' : p.has_package ? 'prompts ready' : p.approved ? 'approved' : 'proposal'}
+              </span>
+            </button>
+            {!isWriting(p) && (
+              <button type="button" className="ghost danger" aria-label="Delete plan"
+                onClick={() => confirm(`Delete “${p.title}”?`) && api.remove(p.id).then(() => {
+                  if (p.id === selected) open(null)
+                  loadPlans()
+                }, (e: Error) => setError(e.message))}>✕</button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </>
+  )
+
   return (
     <div className="director">
-      <div className="page-title">
-        <h1>Stickman Director</h1>
-        <p className="muted">Turn a topic, script or article into a stickman animation plan: a director’s proposal to
-          review, then ready-to-paste Google Flow (Omni Flash) prompts for every ten-second clip.{' '}
-          <a href="https://github.com/kaomei/stickman-video-director" target="_blank" rel="noreferrer">Based on Stickman Video Director</a> (MIT).</p>
+      <div className="tool-page-head">
+        <div className="tool-page-copy">
+          <h1>{generic ? 'Video Director' : 'Stickman Director'}</h1>
+          {generic ? (
+            <p className="muted">Turn a topic, script or article into a production-ready plan for real people and
+              real-world scenes, then create consistent Google Flow prompts for every ten-second clip.</p>
+          ) : (
+            <p className="muted">Turn a topic, script or article into a stickman animation plan: a director’s proposal to
+              review, then ready-to-paste Google Flow (Omni Flash) prompts for every ten-second clip.{' '}
+              <a href="https://github.com/kaomei/stickman-video-director" target="_blank" rel="noreferrer">Based on Stickman Video Director</a> (MIT).</p>
+          )}
+        </div>
+        <button type="button" className={!selected && !creating ? 'primary' : ''}
+          onClick={() => selected || creating ? open(null) : startProject()}>
+          {selected || creating ? '← Projects' : '+ Create project'}
+        </button>
       </div>
       {error && <div className="notice error-notice"><p>{error}</p><button onClick={() => setError(null)}>Dismiss</button></div>}
 
-      <div className="workspace">
+      {!selected && !creating ? (
+        <section className="panel side-card tool-projects first-load-projects">
+          {planList}
+        </section>
+      ) : <div className="workspace">
         <div className="workspace-main">
           {selected && plan ? (
-            <PlanView key={plan.id} plan={plan} styles={styles} services={services} onUpdate={update} onError={setError}
+            <PlanView key={plan.id} plan={plan} styles={styles} services={services} api={api} generic={generic}
+              onUpdate={update} onError={setError}
               onClose={() => open(null)} />
           ) : selected ? (
             <p className="muted">Loading…</p>
-          ) : (
+          ) : creating ? (
             <section className="panel section">
-              <h3><span className="step">1</span> New stickman video plan</h3>
-              <PlanForm styles={styles} services={services} submitLabel="Write the director’s proposal"
+              <h3><span className="step">1</span> New {generic ? 'real-world' : 'stickman'} video plan</h3>
+              <PlanForm styles={styles} services={services} mode={mode} submitLabel="Write the director’s proposal"
                 onSubmit={async (s) => {
-                  const p = await directorApi.create(s)
+                  const p = await api.create(s)
                   loadPlans()
                   open(p.id)
                 }} onError={setError} />
             </section>
-          )}
+          ) : null}
         </div>
         <aside className="workspace-side">
           <div className="panel side-card">
-            <div className="section-title-row">
-              <strong>Your plans</strong>
-              {selected && <button className="small-btn" onClick={() => open(null)}>+ New plan</button>}
-            </div>
-            {!plans.length && <p className="muted small">Plans you write appear here.</p>}
-            <ul className="plan-list">
-              {plans.map((p) => (
-                <li key={p.id} className={p.id === selected ? 'on' : ''}>
-                  <button type="button" className="plan-item" onClick={() => open(p.id)}>
-                    <strong>{p.title}</strong>
-                    <span className="muted small">
-                      {styles.find((s) => s.id === p.settings.style)?.short ?? p.settings.style} · {p.settings.aspect} · {formatSeconds(p.settings.seconds)}
-                      {' · '}{isWriting(p) ? 'writing…' : p.status === 'failed' ? 'failed' : p.has_package ? 'prompts ready' : p.approved ? 'approved' : 'proposal'}
-                    </span>
-                  </button>
-                  {!isWriting(p) && (
-                    <button type="button" className="ghost danger" aria-label="Delete plan"
-                      onClick={() => confirm(`Delete “${p.title}”?`) && directorApi.remove(p.id).then(() => {
-                        if (p.id === selected) open(null)
-                        loadPlans()
-                      }, (e: Error) => setError(e.message))}>✕</button>
-                  )}
-                </li>
-              ))}
-            </ul>
+            {planList}
           </div>
         </aside>
-      </div>
+      </div>}
     </div>
   )
 }
 
-function PlanForm({ styles, services, initial, submitLabel, onSubmit, onError, onCancel }: {
+function PlanForm({ styles, services, mode, initial, submitLabel, onSubmit, onError, onCancel }: {
   styles: DirectorStyle[]
   services: ReturnType<typeof useAIServices>
+  mode: 'stickman' | 'generic'
   initial?: DirectorSettings
   submitLabel: string
   onSubmit: (s: DirectorSettings) => Promise<void>
@@ -141,7 +175,7 @@ function PlanForm({ styles, services, initial, submitLabel, onSubmit, onError, o
     if (missing.length) return
     setBusy(true)
     try {
-      await onSubmit({ ...d, aspect: d.aspect!, style: d.style!, url: d.url?.trim() || null })
+      await onSubmit({ ...d, mode, aspect: d.aspect!, style: d.style!, url: d.url?.trim() || null })
     } catch (e) {
       onError((e as Error).message)
     } finally {
@@ -203,13 +237,15 @@ function PlanForm({ styles, services, initial, submitLabel, onSubmit, onError, o
         <div className="director-styles">
           {styles.map((s) => (
             <button type="button" key={s.id} className={`director-style ${d.style === s.id ? 'on' : ''}`} onClick={() => set('style', s.id)}>
-              <span className={`director-swatch s-${s.id}`} aria-hidden="true"><StickFigure /></span>
+              <span className={`director-swatch s-${s.id}`} aria-hidden="true">
+                {mode === 'generic' ? <RealWorldFrame /> : <StickFigure />}
+              </span>
               <strong>{s.name.replace(/^Style /, '')}</strong>
               <small>{s.best_for}</small>
             </button>
           ))}
         </div>
-        {(d.style === '1-light' || d.style === '1-dark') && (
+        {mode === 'stickman' && (d.style === '1-light' || d.style === '1-dark') && (
           <label className="field check">
             <input type="checkbox" checked={d.faceless} onChange={(e) => set('faceless', e.target.checked)} />
             Faceless figure <em className="muted">(no line expressions at all)</em>
@@ -262,10 +298,22 @@ function StickFigure() {
   )
 }
 
-function PlanView({ plan, styles, services, onUpdate, onError, onClose }: {
+function RealWorldFrame() {
+  return (
+    <svg viewBox="0 0 52 34" width="46" height="30" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+      <rect x="1" y="1" width="50" height="32" rx="4" />
+      <circle cx="21" cy="12" r="4" />
+      <path d="M14 27c1-6 4-9 7-9s6 3 7 9M32 11h12M32 16h9M32 21h11" />
+    </svg>
+  )
+}
+
+function PlanView({ plan, styles, services, api, generic, onUpdate, onError, onClose }: {
   plan: Plan
   styles: DirectorStyle[]
   services: ReturnType<typeof useAIServices>
+  api: DirectorApi
+  generic: boolean
   onUpdate: (p: Plan) => void
   onError: (m: string) => void
   onClose: () => void
@@ -284,7 +332,7 @@ function PlanView({ plan, styles, services, onUpdate, onError, onClose }: {
       <section className="panel section">
         <div className="section-title-row">
           <h3>{plan.proposal?.title_en ?? plan.title}</h3>
-          <button className="link" onClick={onClose}>← New plan</button>
+          <button className="link" onClick={onClose}>← Projects</button>
         </div>
         {plan.proposal?.title_ref && <p className="muted">{plan.proposal.title_ref}</p>}
         <p className="muted small">{style?.name ?? s.style} · {s.aspect} · {formatSeconds(s.seconds)} ({s.seconds / 10} clips) · plan in {s.language}</p>
@@ -300,22 +348,23 @@ function PlanView({ plan, styles, services, onUpdate, onError, onClose }: {
         )}
         {plan.status === 'failed' && <p className="error small">{plan.error}</p>}
         <div className="row">
-          {writing && <button className="link danger" disabled={plan.cancelling} onClick={() => call(directorApi.cancel(plan.id))}>Cancel</button>}
+          {writing && <button className="link danger" disabled={plan.cancelling} onClick={() => call(api.cancel(plan.id))}>Cancel</button>}
           {writing && plan.limit?.mode === 'wait' && <button className="small-btn" onClick={() => setLimitOpen(true)}>Switch instead…</button>}
           {!writing && (plan.status === 'failed' || plan.status === 'cancelled') && (
-            <button className="small-btn" onClick={() => call(directorApi.retry(plan.id))}>Retry</button>
+            <button className="small-btn" onClick={() => call(api.retry(plan.id))}>Retry</button>
           )}
-          {!writing && plan.proposal && <a className="button small-btn" href={`/api/director/plans/${plan.id}/export.md`}>Download plan (.md)</a>}
-          {!writing && plan.proposal && <a className="button small-btn" href={`/api/director/plans/${plan.id}/subtitles.srt`}>Subtitles (.srt)</a>}
+          {!writing && plan.proposal && <a className="button small-btn" href={`${api.base}/plans/${plan.id}/export.md`}>Download plan (.md)</a>}
+          {!writing && plan.proposal && <a className="button small-btn" href={`${api.base}/plans/${plan.id}/subtitles.srt`}>Subtitles (.srt)</a>}
           {!writing && plan.proposal && <button className="link" onClick={() => setEditing((x) => !x)}>Change settings…</button>}
         </div>
         {editing && (
           <div className="director-edit">
             <p className="muted small">Changing ratio, length, style, voice or language recomposes the whole proposal and needs a new approval.</p>
-            <PlanForm styles={styles} services={services} initial={s} submitLabel="Recompose the proposal" onError={onError}
+            <PlanForm styles={styles} services={services} mode={generic ? 'generic' : 'stickman'} initial={s}
+              submitLabel="Recompose the proposal" onError={onError}
               onCancel={() => setEditing(false)}
               onSubmit={async (next) => {
-                onUpdate(await directorApi.revise(plan.id, { feedback: '', settings: next }))
+                onUpdate(await api.revise(plan.id, { feedback: '', settings: next }))
                 setEditing(false)
               }} />
           </div>
@@ -324,7 +373,7 @@ function PlanView({ plan, styles, services, onUpdate, onError, onClose }: {
 
       {plan.proposal && (
         <ProposalView plan={plan} proposal={plan.proposal} disabled={writing}
-          onReviseClip={(clip, text) => call(directorApi.revise(plan.id, { feedback: text, clip }))} />
+          onReviseClip={(clip, text) => call(api.revise(plan.id, { feedback: text, clip }))} />
       )}
 
       {plan.proposal && !writing && (
@@ -333,10 +382,10 @@ function PlanView({ plan, styles, services, onUpdate, onError, onClose }: {
           <textarea rows={2} value={feedback} placeholder="What should change? e.g. make the hook more surprising, add a callback in clip 5…"
             onChange={(e) => setFeedback(e.target.value)} />
           <div className="row">
-            <button disabled={!feedback.trim()} onClick={() => call(directorApi.revise(plan.id, { feedback })).then(() => setFeedback(''))}>
+            <button disabled={!feedback.trim()} onClick={() => call(api.revise(plan.id, { feedback })).then(() => setFeedback(''))}>
               Revise the proposal
             </button>
-            <button className="primary" onClick={() => call(directorApi.approve(plan.id))}>
+            <button className="primary" onClick={() => call(api.approve(plan.id))}>
               {plan.package ? 'Write all prompts again' : `Approve & write ${plan.proposal.clips.length} prompts`}
             </button>
           </div>
@@ -345,12 +394,12 @@ function PlanView({ plan, styles, services, onUpdate, onError, onClose }: {
       )}
 
       {plan.package && <PackageView plan={plan} pkg={plan.package} disabled={writing}
-        onRewrite={(clip, text) => call(directorApi.rewriteClip(plan.id, clip, text))} />}
+        api={api} generic={generic} onRewrite={(clip, text) => call(api.rewriteClip(plan.id, clip, text))} />}
 
       {writing && plan.limit && !plan.cancelling && (plan.limit.mode === 'ask' || (plan.limit.mode === 'wait' && limitOpen)) && (
         <LimitDialog state={plan.limit} onClose={() => setLimitOpen(false)}
-          onChoose={async (action, option) => onUpdate(await directorApi.limitChoice(plan.id, action, option))}
-          onCancel={async () => onUpdate(await directorApi.cancel(plan.id))} cancelPrompt="Stop writing this plan?" />
+          onChoose={async (action, option) => onUpdate(await api.limitChoice(plan.id, action, option))}
+          onCancel={async () => onUpdate(await api.cancel(plan.id))} cancelPrompt="Stop writing this plan?" />
       )}
     </>
   )
@@ -451,10 +500,12 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
   )
 }
 
-function PackageView({ plan, pkg, disabled, onRewrite }: {
+function PackageView({ plan, pkg, disabled, api, generic, onRewrite }: {
   plan: Plan
   pkg: Package
   disabled: boolean
+  api: DirectorApi
+  generic: boolean
   onRewrite: (clip: number, feedback: string) => void
 }) {
   const [rewriting, setRewriting] = useState<number | null>(null)
@@ -467,7 +518,7 @@ function PackageView({ plan, pkg, disabled, onRewrite }: {
         <CopyButton text={all} label={`Copy all ${pkg.clips.length} prompts`} />
       </div>
       <p className="muted small">Paste each prompt into Google Flow (Omni Flash) in order, then assemble the clips and add subtitles
-        ({plan.proposal ? <a href={`/api/director/plans/${plan.id}/subtitles.srt`}>.srt</a> : '.srt'}) in your editor.</p>
+        ({plan.proposal ? <a href={`${api.base}/plans/${plan.id}/subtitles.srt`}>.srt</a> : '.srt'}) in your editor.</p>
       <details>
         <summary><strong>Global continuity block</strong></summary>
         <pre className="director-prompt">{pkg.global_block}</pre>
@@ -483,7 +534,9 @@ function PackageView({ plan, pkg, disabled, onRewrite }: {
           <pre className="director-prompt">{c.prompt}</pre>
           {rewriting === c.clip && (
             <div className="row">
-              <input className="grow-input" value={text} autoFocus placeholder="e.g. make the figure leap instead of walk; keep the ending"
+              <input className="grow-input" value={text} autoFocus
+                placeholder={generic ? 'e.g. move the scene outdoors; keep the same person and ending'
+                  : 'e.g. make the figure leap instead of walk; keep the ending'}
                 onChange={(e) => setText(e.target.value)} />
               <button disabled={!text.trim()} onClick={() => { onRewrite(c.clip, text); setRewriting(null) }}>Rewrite</button>
             </div>

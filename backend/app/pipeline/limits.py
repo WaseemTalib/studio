@@ -26,9 +26,11 @@ PER_MINUTE = {"RPM", "TPM", "ITPM", "OTPM"}
 SHORT_WAIT_SECONDS = 90.0
 
 SERVICE_LABELS = {
-    "groq": "Groq", "gemini": "Google Gemini", "openrouter": "OpenRouter", "sambanova": "SambaNova",
+    "groq": "Groq", "claude": "Claude (AgentRouter)", "deepseek": "DeepSeek (AgentRouter)",
+    "deepseek-api": "DeepSeek (personal key)", "gemini": "Google Gemini", "openrouter": "OpenRouter", "sambanova": "SambaNova",
     "local": "Whisper (this computer)", "pexels": "Pexels", "pixabay": "Pixabay",
-    "wikimedia": "Wikimedia Commons", "jamendo": "Jamendo",
+    "wikimedia": "Wikimedia Commons", "openverse": "Openverse", "searxng": "SearXNG",
+    "duckduckgo": "DuckDuckGo", "youtube": "YouTube", "jamendo": "Jamendo",
 }
 
 

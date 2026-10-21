@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { api, captionPreviewUrl, formatEta, formatTime, type LimitState, type LookOptions, type Presets } from '../api'
+import { useLocation } from 'react-router-dom'
+import {
+  api, captionPreviewUrl, DEFAULT_CAPTION_OFFSET, DEFAULT_CAPTION_SIZE, formatEta, formatTime,
+  type LimitState, type LookOptions, type Presets,
+} from '../api'
 import { LimitDialog, LimitLine } from '../components/LimitDialog'
 import { rememberedService, useAIServices } from '../aiServices'
 import AIModelSelect from '../components/AIModelSelect'
@@ -31,15 +35,15 @@ const DEFAULT_SETTINGS_REQUEST: Omit<VideoRequest, 'title' | 'description' | 'ha
   aspect: '16:9',
   resolution: '1080p',
   footage: 'pexels',
-  sources: ['pixabay', 'coverr', 'unsplash'],
+  sources: ['openverse', 'pixabay', 'coverr', 'unsplash'],
   clip_seconds: 5,
   transition: 'fade',
   caption_style: 'simple',
   caption_position: 'bottom',
   highlight_color: '#facc15',
   words_per_line: 4,
-  caption_size: 100,
-  caption_offset: 0,
+  caption_size: DEFAULT_CAPTION_SIZE,
+  caption_offset: DEFAULT_CAPTION_OFFSET,
   title_overlay: false,
   music: null,
   music_mode: 'track',
@@ -60,10 +64,13 @@ interface Script {
 const wordCount = (scenes: Scene[]) => scenes.reduce((n, s) => n + s.text.split(/\s+/).filter(Boolean).length, 0)
 const CREDIT_SOURCE: Record<string, string> = {
   pexels: 'Pexels', pixabay: 'Pixabay', wikimedia: 'Wikimedia Commons', commons: 'Wikimedia Commons', jamendo: 'Jamendo',
+  openverse: 'Openverse', web: 'Web image', searxng: 'SearXNG', duckduckgo: 'DuckDuckGo', youtube: 'YouTube',
 }
 const isWorking = (v: Video) => v.status === 'queued' || v.status === 'processing'
 
 export default function VideoMaker() {
+  const location = useLocation()
+  const [creating, setCreating] = useState(false)
   const [presets, setPresets] = useState<Presets | null>(null)
   const [options, setOptions] = useState<MakerOptions | null>(null)
   const [source, setSource] = useState<DraftRequest>({
@@ -86,12 +93,18 @@ export default function VideoMaker() {
     api.presets().then(setPresets, (e: Error) => setError(e.message))
     makerApi.options().then((o) => {
       setOptions(o)
-      // Start with the stock sources that have keys (Commons is opt-in: real footage, but slower and mixed).
+      // Keep the selected keyless research sources and any stock sources whose keys are configured.
       setSettings((s) => ({ ...s, sources: s.sources.filter((src) => o.footage[src]) }))
     }, (e: Error) => setError(e.message))
     loadVideos()
   }, [loadVideos])
   usePolling(loadVideos, 2000, videos.some(isWorking))
+  useEffect(() => {
+    if (!location.hash || !videos.length) return
+    const id = decodeURIComponent(location.hash.slice(1))
+    const timer = window.setTimeout(() => document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
+    return () => window.clearTimeout(timer)
+  }, [location.hash, videos.length])
 
   const setSrc = <K extends keyof DraftRequest>(k: K, v: DraftRequest[K]) => setSource((s) => ({ ...s, [k]: v }))
   const set = <K extends keyof Settings>(k: K, v: Settings[K]) => setSettings((s) => ({ ...s, [k]: v }))
@@ -124,7 +137,8 @@ export default function VideoMaker() {
       const scenes = script.scenes.map((s) => forApi({ ...s, text: s.text.trim() })).filter((s) => s.text)
       const v = await makerApi.create({ ...settings, ...script, scenes, language: languageCode, ai_service: source.service })
       setVideos((all) => [v, ...all])
-      document.getElementById('maker-videos')?.scrollIntoView({ behavior: 'smooth' })
+      setCreating(false)
+      setTimeout(() => document.getElementById('maker-videos')?.scrollIntoView({ behavior: 'smooth' }), 50)
     } catch (e) {
       setError((e as Error).message)
     } finally {
@@ -167,6 +181,7 @@ export default function VideoMaker() {
   }
 
   function reuse(v: Video) {
+    setCreating(true)
     const { title, description, hashtags, scenes, language, ai_service, ...rest } = v.request
     if (ai_service) setSrc('service', ai_service)
     setScript({ title, description, hashtags, scenes: scenes.map((sc) => withUid({ ...blankScene(), ...sc, uid: undefined })) })
@@ -187,17 +202,28 @@ export default function VideoMaker() {
   }
   const words = script ? wordCount(script.scenes) : 0
   const seconds = Math.round(words / 150 * 60 / settings.voice.settings.speed)
+  const startProject = () => {
+    setSource((current) => ({ ...current, kind: 'prompt', text: '', url: null, tone: '' }))
+    setScript(null)
+    setSuggestions({})
+    setCreating(true)
+  }
 
   return (
     <div className="maker">
-      <div className="page-title">
-        <h1>Video Maker</h1>
-        <p className="muted">Turn a prompt, description, script or news story into a narrated video with stock footage,
-          captions and music — using free services.</p>
+      <div className="tool-page-head">
+        <div className="tool-page-copy">
+          <h1>Video Maker</h1>
+          <p className="muted">Turn a prompt, description, script or news story into a narrated video with live research,
+            stock footage, captions and music.</p>
+        </div>
+        <button type="button" className={creating ? '' : 'primary'} onClick={() => creating ? setCreating(false) : startProject()}>
+          {creating ? '← Projects' : '+ Create project'}
+        </button>
       </div>
       {error && <div className="notice error-notice"><p>{error}</p><button onClick={() => setError(null)}>Dismiss</button></div>}
 
-      <div className="workspace">
+      {creating && <div className="workspace">
         <div className="workspace-main">
           <section className="panel section">
             <h3><span className="step">1</span> What is the video about?</h3>
@@ -275,7 +301,7 @@ export default function VideoMaker() {
                       const ok = options?.footage[f.id] ?? false
                       return (
                         <label key={f.id} className={`source-option ${ok ? '' : 'disabled'}`}
-                          title={ok ? '' : `Add ${f.key} to backend/.env (${f.signup}) and restart the backend`}>
+                          title={ok ? '' : `${f.key} is unavailable (${f.signup}); restart the backend after installing or configuring it`}>
                           <input type="checkbox" disabled={!ok} checked={settings.sources.includes(f.id)}
                             onChange={(e) => set('sources', e.target.checked
                               ? [...settings.sources, f.id] : settings.sources.filter((x) => x !== f.id))} />
@@ -376,11 +402,14 @@ export default function VideoMaker() {
             {!script && <p className="muted small">Write or paste a script first.</p>}
           </div>
         </aside>
-      </div>
+      </div>}
 
-      <section id="maker-videos" className="maker-videos">
-        <h2>Your videos</h2>
-        {videos.length === 0 && <p className="muted">Videos you make appear here.</p>}
+      {!creating && <section id="maker-videos" className="maker-videos first-load-projects">
+        <div className="section-head">
+          <h2>Projects</h2>
+          {videos.length > 0 && <span className="muted small">{videos.length} total</span>}
+        </div>
+        {videos.length === 0 && <div className="empty">No projects yet. Create one to make your first video.</div>}
         <div className="maker-grid">
           {videos.map((v) => (
             <VideoCard key={v.id} video={v} onReuse={() => reuse(v)} onError={setError}
@@ -388,7 +417,7 @@ export default function VideoMaker() {
               onRemoved={() => setVideos((all) => all.filter((x) => x.id !== v.id))} />
           ))}
         </div>
-      </section>
+      </section>}
 
       {draftLimit && (
         <DraftLimitDialog state={draftLimit} onClose={() => setDraftLimit(null)}
@@ -654,7 +683,7 @@ function VideoCard({ video, onUpdate, onRemoved, onReuse, onError }: {
   const percent = Math.round(video.progress * 100)
   const label = video.cancelling ? 'Cancelling…' : video.stage ? MAKER_STAGE_LABEL[video.stage] : 'Queued'
   return (
-    <article className="panel maker-card">
+    <article id={`video-${video.id}`} className="panel maker-card">
       {video.status === 'done' && video.video ? (
         <video className={`maker-player ${video.request.aspect === '16:9' ? 'wide' : ''}`} controls preload="metadata"
           src={video.video} poster={video.thumbnail ?? undefined} />

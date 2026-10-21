@@ -8,6 +8,7 @@ export interface DirectorStyle {
 }
 
 export interface DirectorSettings {
+  mode?: 'stickman' | 'generic'
   source_kind: 'topic' | 'script' | 'article'
   source: string
   url: string | null
@@ -111,22 +112,27 @@ const json = (body: unknown): RequestInit => ({
   body: JSON.stringify(body),
 })
 
-export const directorApi = {
-  options: () => request<{ styles: DirectorStyle[]; max_seconds: number }>('/api/director/options'),
-  plans: () => request<Plan[]>('/api/director/plans'),
-  get: (id: string) => request<Plan>(`/api/director/plans/${id}`),
-  create: (s: DirectorSettings) => request<Plan>('/api/director/plans', json(s)),
+const createDirectorApi = (base: string) => ({
+  base,
+  options: () => request<{ styles: DirectorStyle[]; max_seconds: number }>(`${base}/options`),
+  plans: () => request<Plan[]>(`${base}/plans`),
+  get: (id: string) => request<Plan>(`${base}/plans/${id}`),
+  create: (s: DirectorSettings) => request<Plan>(`${base}/plans`, json(s)),
   revise: (id: string, body: { feedback: string; clip?: number; settings?: DirectorSettings }) =>
-    request<Plan>(`/api/director/plans/${id}/revise`, json(body)),
-  approve: (id: string) => request<Plan>(`/api/director/plans/${id}/approve`, { method: 'POST' }),
+    request<Plan>(`${base}/plans/${id}/revise`, json(body)),
+  approve: (id: string) => request<Plan>(`${base}/plans/${id}/approve`, { method: 'POST' }),
   rewriteClip: (id: string, clip: number, feedback: string) =>
-    request<Plan>(`/api/director/plans/${id}/clips/${clip}/rewrite`, json({ feedback })),
-  cancel: (id: string) => request<Plan>(`/api/director/plans/${id}/cancel`, { method: 'POST' }),
-  retry: (id: string) => request<Plan>(`/api/director/plans/${id}/retry`, { method: 'POST' }),
+    request<Plan>(`${base}/plans/${id}/clips/${clip}/rewrite`, json({ feedback })),
+  cancel: (id: string) => request<Plan>(`${base}/plans/${id}/cancel`, { method: 'POST' }),
+  retry: (id: string) => request<Plan>(`${base}/plans/${id}/retry`, { method: 'POST' }),
   limitChoice: (id: string, action: 'wait' | 'switch', option?: string) =>
-    request<Plan>(`/api/director/plans/${id}/limit-choice`, json({ action, option: option ?? null })),
-  remove: (id: string) => request<void>(`/api/director/plans/${id}`, { method: 'DELETE' }),
-}
+    request<Plan>(`${base}/plans/${id}/limit-choice`, json({ action, option: option ?? null })),
+  remove: (id: string) => request<void>(`${base}/plans/${id}`, { method: 'DELETE' }),
+})
+
+export type DirectorApi = ReturnType<typeof createDirectorApi>
+export const directorApi = createDirectorApi('/api/director')
+export const videoDirectorApi = createDirectorApi('/api/video-director')
 
 export const isWriting = (p: Plan) => p.status === 'queued' || p.status === 'processing'
 

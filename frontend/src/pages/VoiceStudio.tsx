@@ -45,6 +45,7 @@ function load(): Partial<Saved> {
 
 export default function VoiceStudio() {
   const saved = useMemo(load, [])
+  const [creating, setCreating] = useState(false)
   const [providers, setProviders] = useState<ProviderInfo[] | null>(null)
   const [provider, setProvider] = useState<TTSProvider>(saved.provider ?? 'elevenlabs')
   const [models, setModels] = useState<TTSModel[]>([])
@@ -141,10 +142,37 @@ export default function VoiceStudio() {
   const controls = new Set<Control>(model?.controls ?? ['speed'])
 
   return (
-    <div className={`vs ${current ? 'with-player' : ''}`}>
+    <div className="tool-page">
+      <div className="tool-page-head">
+        <div className="tool-page-copy">
+          <h1>Voice Studio</h1>
+          <p className="muted">Turn text into natural speech and reuse any voice project.</p>
+        </div>
+        <button type="button" className={creating ? '' : 'primary'} onClick={() => {
+          if (!creating) {
+            setText('')
+            setTab('settings')
+          }
+          setCreating(!creating)
+          setPicking(false)
+        }}>
+          {creating ? '← Projects' : '+ Create project'}
+        </button>
+      </div>
+      {!creating && error && <div className="notice error-notice"><p>{error}</p><button onClick={() => setError(null)}>Dismiss</button></div>}
+      {!creating ? (
+        <section className="panel tool-projects first-load-projects">
+          <div className="section-head">
+            <h2>Projects</h2>
+            {history.length > 0 && <span className="muted small">{history.length} total</span>}
+          </div>
+          <HistoryList items={history} current={current} onPlay={setCurrent} onDelete={remove}
+            onReuse={(g) => { setText(g.text); setTab('settings'); setCreating(true) }} />
+        </section>
+      ) : <div className={`vs ${current ? 'with-player' : ''}`}>
       <section className="vs-editor">
         <div className="vs-head">
-          <h1>Text to Speech</h1>
+          <h2>Text to Speech</h2>
           <div className="segmented">
             {(providers ?? []).map((p) => (
               <button type="button" key={p.id} className={provider === p.id ? 'on' : ''} onClick={() => setProvider(p.id)}
@@ -257,6 +285,7 @@ export default function VoiceStudio() {
         <VoicePicker provider={provider} selected={voice} onClose={() => setPicking(false)}
           onPick={(v) => { setVoices((all) => ({ ...all, [provider]: v })); setPicking(false) }} />
       )}
+      </div>}
       {current && <Player key={current.id} generation={current} onClose={() => setCurrent(null)} />}
     </div>
   )

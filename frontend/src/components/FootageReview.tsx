@@ -5,11 +5,12 @@ import { FOOTAGE_SOURCES, makerApi, type FootageSource, type Media, type Scene, 
 export type Suggestions = Record<string, { shots: number; candidates: Media[] }>
 
 const PROVIDER: Record<Media['provider'], string> = {
+  openverse: 'Openverse', web: 'Web', searxng: 'SearXNG', duckduckgo: 'DuckDuckGo', youtube: 'YouTube',
   pexels: 'Pexels', pixabay: 'Pixabay', coverr: 'Coverr', commons: 'Commons', wikimedia: 'Wikimedia',
   unsplash: 'Unsplash', upload: 'Yours',
 }
 
-type PickerSource = 'all' | FootageSource | 'photos' | 'uploads'
+type PickerSource = 'all' | 'research' | FootageSource | 'photos' | 'uploads'
 
 /** The footage each scene will use: thumbnails to check, swap, add or remove before rendering. */
 export default function FootageReview({ scenes, suggestions, sources, aspect, resolution, busy, onFind, onChange }: {
@@ -124,7 +125,8 @@ function MediaPicker({ scene, index, candidates, sources, aspect, resolution, on
     setBusy(true)
     setError(null)
     try {
-      const wanted = source === 'all' ? sources : [source]
+      const wanted: (FootageSource | 'photos')[] = source === 'all' ? sources
+        : source === 'research' ? ['openverse', 'web', 'youtube'] : [source as FootageSource | 'photos']
       setResults(await makerApi.searchFootage(query.trim(), wanted, aspect, resolution))
     } catch (err) {
       setError((err as Error).message)
@@ -181,6 +183,7 @@ function MediaPicker({ scene, index, candidates, sources, aspect, resolution, on
         <form className="row footage-search" onSubmit={search}>
           <select value={source} onChange={(e) => chooseSource(e.target.value as PickerSource)}>
             {sources.length > 1 && <option value="all">All ticked sources</option>}
+            <option value="research">Live research (images + video)</option>
             {sources.map((s) => <option key={s} value={s}>{FOOTAGE_SOURCES.find((f) => f.id === s)?.label}</option>)}
             <option value="photos">Photos (Wikimedia Commons)</option>
             <option value="uploads">My uploads</option>
@@ -206,6 +209,9 @@ function MediaPicker({ scene, index, candidates, sources, aspect, resolution, on
             : results ? `${results.length} results for “${query}”. Faded ones only partly match.`
               : `Suggestions from this scene’s searches: ${scene.search_terms.join(', ') || '—'}. Faded ones only partly match.`}
         </p>
+        {!uploadsTab && (source === 'research' || source === 'web' || source === 'youtube') && (
+          <p className="small limit-reason">Web and YouTube results may be copyrighted. Review the source page and usage rights before publishing.</p>
+        )}
         <div className="footage-grid">
           {shown.map((m) => (
             <div key={m.key} className="footage-pick">

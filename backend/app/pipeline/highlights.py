@@ -14,18 +14,20 @@ import math
 import os
 import re
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import TypeVar
 
 import requests
 from pydantic import BaseModel, ValidationError
 
-from ..config import (GEMINI_API_KEY, GEMINI_MODEL, GROQ_FAST_MODEL, GROQ_LLM_MODEL, GROQ_TPM, LLM_PROVIDER,
+from ..config import (AGENTROUTER_BASE_URL, AGENTROUTER_CLAUDE_KEY, AGENTROUTER_DEEPSEEK_KEY, AGENTROUTER_HEADERS,
+                      CLAUDE_MODEL, DEEPSEEK_API_BASE, DEEPSEEK_API_KEY, DEEPSEEK_API_MODEL, DEEPSEEK_MODEL,
+                      GEMINI_API_KEY, GEMINI_MODEL, GROQ_FAST_MODEL, GROQ_LLM_MODEL, GROQ_TPM, LLM_PROVIDER,
                       OPENROUTER_API_KEY, OPENROUTER_MODEL, SAMBANOVA_API_KEY, SAMBANOVA_MODEL)
 from ..presets import GENRES
 from ..schemas import Candidate, CandidateSet, ProjectOptions, Review, ReviewSet, Transcript
-from . import limits
+from . import ai_chain, limits
 from .sentences import Sentence, cut_points, split_sentences
 
 T = TypeVar("T", bound=BaseModel)
@@ -70,6 +72,11 @@ class HighlightError(RuntimeError):
 
 class RequestTooLarge(HighlightError):
     """The provider rejected one request as too large; a smaller request may succeed."""
+
+
+class ServiceUnavailable(HighlightError):
+    """The service cannot answer right now (outside its hours, out of quota, refusing the client, down).
+    The automatic chain skips it until its recheck time."""
 
 
 @dataclass
@@ -322,6 +329,8 @@ def _normalize(candidates: list[Candidate], sentences: list[Sentence], window: l
 
 
 def _default_choice(clip_model: str) -> str:
+    if LLM_PROVIDER == "auto":
+        return "auto"
     fast = clip_model == "fast"
     choices = {
         "groq": f"groq:{GROQ_FAST_MODEL if fast else GROQ_LLM_MODEL}",
@@ -329,7 +338,7 @@ def _default_choice(clip_model: str) -> str:
     }
     if LLM_PROVIDER not in choices:
         raise HighlightError(f"Unknown SHORTCUT_LLM_PROVIDER {LLM_PROVIDER!r} "
-                             f"(use one of: {', '.join(choices)})")
+                             f"(use auto or one of: {', '.join(choices)})")
     return choices[LLM_PROVIDER]
 
 
@@ -338,8 +347,17 @@ def structured(system: str, prompt: str, schema: type[T], clip_model: str = "qua
     """One structured answer from the chosen (or default) service. Usage limits are waited out or
     put to the user through the job's limit dialog, for `stage`."""
     choice = limits.override(stage) or service or _default_choice(clip_model)
+    if choice == "auto":
+        return _run_chain(system, prompt, schema, clip_model, stage, ask=True)
+    return _run_one(choice, system, prompt, schema, stage)
+
+
+def _run_one(choice: str, system: str, prompt: str, schema: type[T], stage: str) -> T:
+    """One chosen service; a usage limit is waited out or put to the user, who may switch."""
     while True:
         service, _, model = choice.partition(":")
+        if service not in _SERVICES or not model:
+            raise HighlightError(f"Unknown service {choice!r}")
         try:
             return _SERVICES[service](system, prompt, schema, model)
         except limits.LimitReached as e:
@@ -349,14 +367,70 @@ def structured(system: str, prompt: str, schema: type[T], clip_model: str = "qua
                 raise HighlightError(str(again)) from again
 
 
+def _keyed_services() -> dict[str, str]:
+    """Services with a key, and their configured model."""
+    out = {"groq": GROQ_LLM_MODEL} if os.environ.get("GROQ_API_KEY") else {}
+    out.update({service: p.model for service, p in HOSTED.items() if p.key})
+    return out
+
+
+def _run_chain(system: str, prompt: str, schema: type[T], clip_model: str, stage: str, ask: bool) -> T:
+    """The automatic chain (see ai_chain): the first service that is up answers; services that fail are
+    skipped until their recheck time. When all are down: with `ask`, the limit dialog (wait or switch);
+    without, limits.LimitReached for the caller to show."""
+    chain = ai_chain.choices(clip_model, _keyed_services())
+    if not chain:
+        raise HighlightError("No AI service in SHORTCUT_AI_CHAIN has a key; add AGENTROUTER_API_KEY or GROQ_API_KEY "
+                             "to backend/.env")
+    quiet_rounds = 0
+    while True:
+        last_limit: limits.LimitReached | None = None
+        for choice in chain:
+            service, _, model = choice.partition(":")
+            if not ai_chain.usable(service):
+                continue
+            try:
+                result = _SERVICES[service](system, prompt, schema, model)
+            except limits.LimitReached as e:
+                wait = e.limit.retry_after if e.limit.short else max(e.limit.retry_after, ai_chain.MIN_LIMIT_WAIT)
+                ai_chain.mark_down(service, wait, f"{e.limit.name} limit")
+                last_limit = e
+                continue
+            except ServiceUnavailable as e:
+                ai_chain.mark_down(service, ai_chain.recheck_seconds(service), str(e))
+                continue
+            ai_chain.mark_ok(service)
+            return result
+        limit = ai_chain.earliest_limit(chain, last_limit)
+        quiet_rounds += 1
+        if quiet_rounds >= ai_chain.MAX_QUIET_ROUNDS:  # short waits did not help: ask instead of waiting again
+            limit = replace(limit, code="UNAVAILABLE")
+        if not ask:
+            raise limits.LimitReached(limit)
+        try:
+            picked = limits.handle(stage, limit, highlight_options("auto"))
+        except limits.LimitReached as again:  # no project to ask
+            raise HighlightError(str(again)) from again
+        if picked:
+            return _run_one(picked, system, prompt, schema, stage)
+        # Waited until the soonest service is due for its recheck: go round the chain again.
+
+
+def chain_status() -> list[dict]:
+    """Where each service of the automatic chain stands, for the AI model picker."""
+    return ai_chain.status(limits.SERVICE_LABELS, _keyed_services())
+
+
 def default_service() -> str:
-    """The configured service and model, "service:model"."""
+    """The configured service and model, "service:model", or "auto" for the automatic chain."""
     return _default_choice("quality")
 
 
 def ask_once(choice: str, system: str, prompt: str, schema: type[T]) -> T:
-    """One structured request to `choice` ("service:model"). A usage limit raises limits.LimitReached
-    for the caller to show; nothing waits or switches here."""
+    """One structured answer from `choice` ("service:model", or "auto" for the chain). When it (or the
+    whole chain) hits a usage limit, limits.LimitReached is raised for the caller to show."""
+    if choice == "auto":
+        return _run_chain(system, prompt, schema, "quality", "script", ask=False)
     service, _, model = choice.partition(":")
     if service not in _SERVICES or not model:
         raise HighlightError(f"Unknown service {choice!r}")
@@ -376,7 +450,9 @@ def highlight_options(current: str) -> list[limits.Option]:
     for service, p in HOSTED.items():
         options.append(limits.Option(
             f"{service}:{p.model}", f"{limits.SERVICE_LABELS[service]} {p.label_model or p.model}", p.detail,
-            bool(p.key), None if p.key else f"Add {p.key_name} to backend/.env (free key at {p.signup})"))
+            bool(p.key), None if p.key else f"Add {p.key_name} to backend/.env ({p.signup})"))
+    first = ("claude", "deepseek", "deepseek-api", "groq")  # the chain's services, then the other free tiers
+    options.sort(key=lambda o: first.index(o.id.partition(":")[0]) if o.id.partition(":")[0] in first else len(first))
     return [o for o in options if o.id != current]
 
 
@@ -501,9 +577,32 @@ class Hosted:
     detail: str
     label_model: str | None = None  # shown instead of the model id
     reasoning: bool = False         # accepts reasoning_effort
+    family: str | None = None       # with model "auto": pick the newest model of this family the service lists
+    headers: tuple[tuple[str, str], ...] = ()  # extra request headers
+    max_tokens: int | None = None   # answer budget, where the service's default is too small for long plans
+
+
+def _router_headers() -> tuple[tuple[str, str], ...]:
+    """Client headers AgentRouter asked for, from AGENTROUTER_HEADERS (a JSON object)."""
+    if not AGENTROUTER_HEADERS.strip():
+        return ()
+    try:
+        extra = json.loads(AGENTROUTER_HEADERS)
+    except ValueError:
+        log.warning("AGENTROUTER_HEADERS is not valid JSON; ignored")
+        return ()
+    return tuple((str(k), str(v)) for k, v in extra.items()) if isinstance(extra, dict) else ()
 
 
 HOSTED = {
+    "claude": Hosted(AGENTROUTER_BASE_URL, AGENTROUTER_CLAUDE_KEY, "AGENTROUTER_CLAUDE_KEY", CLAUDE_MODEL or "auto",
+                     "agentrouter.org", "Claude through AgentRouter; often limited to certain hours.",
+                     label_model=CLAUDE_MODEL or "(newest Sonnet)", family="claude", headers=_router_headers()),
+    "deepseek": Hosted(AGENTROUTER_BASE_URL, AGENTROUTER_DEEPSEEK_KEY, "AGENTROUTER_DEEPSEEK_KEY",
+                       DEEPSEEK_MODEL or "auto", "agentrouter.org", "DeepSeek through AgentRouter; generous limits.",
+                       label_model=DEEPSEEK_MODEL or "(newest)", family="deepseek", headers=_router_headers()),
+    "deepseek-api": Hosted(DEEPSEEK_API_BASE, DEEPSEEK_API_KEY, "DEEPSEEK_API_KEY", DEEPSEEK_API_MODEL,
+                           "platform.deepseek.com", "Your own DeepSeek key; pay as you go.", max_tokens=8192),
     "gemini": Hosted("https://generativelanguage.googleapis.com/v1beta/openai", GEMINI_API_KEY, "GEMINI_API_KEY",
                      GEMINI_MODEL or "auto", "aistudio.google.com", "Free tier with a generous daily allowance.",
                      label_model=GEMINI_MODEL or "Flash", reasoning=True),
@@ -518,9 +617,12 @@ def _ask_hosted(service: str, system: str, prompt: str, schema: type[T], model: 
     p = HOSTED[service]
     label = limits.SERVICE_LABELS[service]
     if not p.key:
-        raise HighlightError(f"{label} needs {p.key_name} in backend/.env")
+        raise ServiceUnavailable(f"{label} needs {p.key_name} in backend/.env")
     if service == "gemini" and model == "auto":
         model = _gemini_model(p.base, p.key)
+    elif p.family and model == "auto":
+        model = _family_model(p.base, p.key, p.family, p.headers)
+    headers = {"Authorization": f"Bearer {p.key}", "User-Agent": "ShortcutStudio/1.0", **dict(p.headers)}
     attempts = _attempts(system, schema, prompt_only=True)
     last_problem = ""
     for n, (attempt_system, response_format) in enumerate(attempts):
@@ -530,15 +632,20 @@ def _ask_hosted(service: str, system: str, prompt: str, schema: type[T], model: 
             body["response_format"] = response_format
         if p.reasoning:
             body["reasoning_effort"] = "medium"
+        if p.max_tokens:
+            body["max_tokens"] = p.max_tokens
         try:
-            r = requests.post(f"{p.base}/chat/completions", json=body, timeout=900,
-                              headers={"Authorization": f"Bearer {p.key}"})
+            r = requests.post(f"{p.base}/chat/completions", json=body, timeout=900, headers=headers)
         except requests.RequestException as e:
-            raise HighlightError(f"Could not reach {label}") from e
+            raise ServiceUnavailable(f"Could not reach {label}") from e
         if r.status_code == 429:
             raise limits.LimitReached(limits.from_headers(service, model, r.text[:500], r.headers))
         if r.status_code in (401, 403):
-            raise HighlightError(f"{label} API key is missing or invalid ({p.key_name})")
+            hint = (" (AgentRouter refused this client: put the client headers it gave you in AGENTROUTER_HEADERS)"
+                    if "unauthorized client" in r.text.lower() else "")
+            raise ServiceUnavailable(f"{label} refused the request: check {p.key_name}{hint}")
+        if r.status_code in (402, 404) or r.status_code >= 500:
+            raise ServiceUnavailable(f"{label} is unavailable right now ({r.status_code}: {r.text[:200]})")
         if r.status_code == 413:
             raise RequestTooLarge(f"Request too large for {label}")
         if r.status_code in (400, 422) and n + 1 < len(attempts):
@@ -576,6 +683,36 @@ def _gemini_model(base: str, key: str) -> str:
         raise HighlightError("No Gemini Flash model found; set SHORTCUT_GEMINI_MODEL")
     version = lambda m: tuple(float(x) for x in re.findall(r"\d+(?:\.\d+)?", m)[:2])
     return max(flash, key=version)
+
+
+_family_cache: dict[tuple, str] = {}
+
+
+def _family_model(base: str, key: str, family: str, headers: tuple) -> str:
+    """The newest model of a family that the service offers: Claude prefers Sonnet; DeepSeek prefers its
+    chat models over the slower reasoner."""
+    cache_key = (base, key, family)
+    if cache_key in _family_cache:
+        return _family_cache[cache_key]
+    try:
+        r = requests.get(f"{base}/models", timeout=30,
+                         headers={"Authorization": f"Bearer {key}", "User-Agent": "ShortcutStudio/1.0", **dict(headers)})
+    except requests.RequestException as e:
+        raise ServiceUnavailable(f"Could not list models at {base}") from e
+    if r.status_code >= 400:
+        raise ServiceUnavailable(f"Could not list models at {base} ({r.status_code}: {r.text[:200]})")
+    try:
+        ids = [m["id"] for m in r.json().get("data", [])]
+    except (ValueError, KeyError, TypeError) as e:
+        raise ServiceUnavailable(f"Unexpected model list from {base}") from e
+    found = [i for i in ids if family in i.lower()]
+    if not found:
+        raise ServiceUnavailable(f"No {family} model offered at {base}; set SHORTCUT_{family.upper()}_MODEL")
+    preferred = [i for i in found if ("sonnet" in i.lower() if family == "claude" else "r1" not in i.lower()
+                                      and "reasoner" not in i.lower())] or found
+    version = lambda m: tuple(float(x) for x in re.findall(r"\d+(?:\.\d+)?", m)[:3]) or (0.0,)
+    _family_cache[cache_key] = max(preferred, key=version)
+    return _family_cache[cache_key]
 
 
 def _hosted_asker(service: str) -> Callable:

@@ -1,6 +1,24 @@
 export type Aspect = '9:16' | '1:1' | '16:9'
 export type ProjectStatus = 'queued' | 'processing' | 'done' | 'failed' | 'cancelled'
 export type Stage = 'ingest' | 'transcribe' | 'highlights' | 'render'
+export type TaskKind = 'shorts' | 'video-maker' | 'video-director' | 'stickman-director'
+export const DEFAULT_CAPTION_SIZE = 50
+export const DEFAULT_CAPTION_OFFSET = 12
+
+export interface ActiveTask {
+  kind: TaskKind
+  id: string
+  title: string
+  status: 'queued' | 'processing' | 'done'
+  stage: string | null
+  progress: number
+  created_at: number
+  updated_at: number
+  eta_seconds: number | null
+  eta_scope: 'import' | 'total' | null
+  cancelling: boolean
+  limit: LimitState | null
+}
 
 export type Position = 'top' | 'middle' | 'bottom'
 export type Layout = 'auto' | 'fill' | 'track' | 'split' | 'fit'
@@ -13,9 +31,9 @@ export interface LookOptions {
   caption_position: Position
   highlight_color: string
   words_per_line: number
-  /** Font size in percent of the caption style's own (50–200). */
+  /** Font size in percent of the caption style's own (0–150). */
   caption_size: number
-  /** Nudge from the caption position in percent of the frame height (-30–30); negative moves up. */
+  /** Signed percent of available vertical travel (-100 top, 100 bottom). */
   caption_offset: number
   title_overlay: boolean
   auto_zoom: boolean
@@ -38,10 +56,20 @@ export interface ProjectOptions extends LookOptions {
   ai_service: string | null
 }
 
+export interface ChainStatus {
+  service: string
+  label: string
+  state: 'in use' | 'ready' | 'down' | 'no key'
+  reason: string
+  retry_in: number | null
+}
+
 export interface AIServices {
   services: LimitOption[]
-  /** "service:model" used when none is chosen. */
+  /** "service:model" used when none is chosen, or "auto" for the automatic chain. */
   default: string | null
+  /** The automatic chain (Claude → DeepSeek → Groq) and where each service stands. */
+  chain: ChainStatus[]
 }
 
 export interface Word {
@@ -88,8 +116,8 @@ export function captionPreviewUrl(o: Pick<LookOptions, 'caption_style' | 'highli
     position: o.caption_position,
     aspect: o.aspect,
     title: String(o.title_overlay),
-    size: String(o.caption_size ?? 100),
-    offset: String(o.caption_offset ?? 0),
+    size: String(o.caption_size ?? DEFAULT_CAPTION_SIZE),
+    offset: String(o.caption_offset ?? DEFAULT_CAPTION_OFFSET),
   })
   return `/api/caption-preview.png?${q}`
 }
@@ -230,6 +258,9 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   presets: () => request<Presets>('/api/presets'),
   aiServices: () => request<AIServices>('/api/ai-services'),
+  activeTasks: () => request<ActiveTask[]>('/api/tasks'),
+  cancelTask: (kind: TaskKind, id: string) =>
+    request<void>(`/api/tasks/${kind}/${id}/cancel`, { method: 'POST' }),
   listProjects: () => request<Project[]>('/api/projects'),
   getProject: (id: string) => request<Project>(`/api/projects/${id}`),
   listClips: (id: string) => request<Clip[]>(`/api/projects/${id}/clips`),

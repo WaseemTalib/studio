@@ -8,7 +8,7 @@ import { usePolling } from '../usePolling'
 export default function Dashboard() {
   const [projects, setProjects] = useState<Project[] | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [editing, setEditing] = useState(false)  // a source is chosen: focus on the editor
+  const [creating, setCreating] = useState(false)
 
   const load = useCallback(() => {
     api.listProjects().then(setProjects, (e: Error) => setError(e.message))
@@ -30,23 +30,31 @@ export default function Dashboard() {
 
   return (
     <>
-      <section className="hero" id="new">
-        <h1>Turn long videos into ready-to-post shorts</h1>
-        <p className="muted">Paste a link or upload a video. AI finds the best moments, cuts on clean sentence
-          boundaries, frames the speakers and adds captions.</p>
-      </section>
-
-      <NewProject onCreated={(p) => setProjects((list) => [p, ...(list ?? [])])} onSourceChange={setEditing} />
-
-      {!editing && <section className="projects">
+      {creating ? (
+        <div className="tool-page">
+          <div className="tool-page-head">
+            <div className="tool-page-copy">
+              <h1>Turn long videos into ready-to-post shorts</h1>
+              <p className="muted">Paste a link or upload a video. AI finds the best moments, cuts on clean sentence
+                boundaries, frames the speakers and adds captions.</p>
+            </div>
+            <button type="button" onClick={() => setCreating(false)}>← Projects</button>
+          </div>
+          <NewProject onCreated={(p) => {
+            setProjects((list) => [p, ...(list ?? [])])
+            setCreating(false)
+          }} />
+        </div>
+      ) : <section className="projects first-load-projects">
         <div className="section-head">
           <h2>Projects</h2>
           {projects && projects.length > 0 && <span className="muted small">{projects.length} total</span>}
+          <button type="button" className="primary" onClick={() => setCreating(true)}>+ Create project</button>
         </div>
         {error && <p className="error">Could not reach the API: {error}</p>}
         {projects === null && !error && <p className="muted">Loading…</p>}
         {projects?.length === 0 && (
-          <div className="empty">No projects yet. Add a video above to get your first clips.</div>
+          <div className="empty">No projects yet. Create one to get your first clips.</div>
         )}
         <div className="grid">
           {projects?.map((p) => (

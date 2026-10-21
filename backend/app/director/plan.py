@@ -1,8 +1,8 @@
-"""Planning with the AI: Phase A (director's proposal) and Phase B (per-clip prompt details).
+"""Plan stickman or real-world videos in two AI-assisted phases.
 
-The rules below condense the Stickman Video Director skill (MIT, see LICENSE). Long videos are planned in
-batches so each request stays within free-tier limits: first the outline (header and every clip's VO),
-then the storyboard rows, then the prompt details, a few clips at a time.
+Phase A creates the director's proposal and Phase B writes per-clip prompt details. Stickman rules condense
+the Stickman Video Director skill (MIT, see LICENSE). Long videos are planned in batches so each request stays
+within free-tier limits: first the outline, then storyboard rows, then prompt details a few clips at a time.
 """
 
 import json
@@ -87,6 +87,48 @@ exactly (no additions, omissions or changes); each beat's action shows concrete 
 never hex/RGB/Pantone.
 {style_rules}"""
 
+GENERIC_OUTLINE_SYSTEM = """You are the director of short photorealistic videos featuring real people in real-world \
+scenes. From one source, write a director's proposal and the narration for every ten-second clip.
+
+Narration:
+- English voiceover only, natural spoken English, about 20-25 words per ten-second clip, with natural sentence ends. \
+Preserve the source's claims, names, numbers and meaning. Open with a concrete hook, remove repetition, and build a \
+clear beginning, development and resolution.
+- Never invent research, statistics, quotations, product claims or facts.
+- Stage values should describe the narrative job plainly, such as Hook, Context, Development, Turning Point and Resolution.
+Everything else (titles, core message, hook, summaries, purposes and directions) is written in {language}.
+
+People and continuity: cast contains every recurring real person or important physical subject. Each anchor is a complete \
+English continuity description: approximate age, build, hair, face, wardrobe silhouette and one recognizable accessory or \
+object. Keep identity, wardrobe and owned props consistent across clips. Do not name a real public person unless supplied.
+Voice: one complete video-level narrator profile for every clip. The narrator remains off-screen and audio-only.
+Music: one frozen English score description repeated in every clip; arrangement may follow the emotional arc.
+Palette: {palette}. Use ordinary color names only, never hex, RGB, HSL or Pantone notation.
+Text: generated footage contains no readable words; optional short overlays are listed separately for post-production.
+{style_rules}"""
+
+GENERIC_STORYBOARD_SYSTEM = """You turn an approved outline into storyboard rows for ten-second photorealistic clips \
+with real people in real-world scenes. Write in {language} (VO stays as given). For each clip:
+- three timed beats: 0-3s establish or inherit the scene, 3-7s develop the idea through visible human action, and 7-10s \
+land the point and create the outgoing transition;
+- a perceptible visual change every two to three seconds; {devices}
+- concrete, filmable actions, authentic locations and motivated props; avoid vague montage filler;
+- composition for {aspect}: {composition}
+- preserve each person's face, age, build, hair, wardrobe and owned props; name only the cast roles visible in the clip;
+- end with a pose, action, prop, direction or named location/time cut that the next clip can inherit;
+- no readable words, letters or numbers in generated footage. Reserve any text for post-production overlays.
+{style_rules}"""
+
+GENERIC_PROMPT_SYSTEM = """You write per-clip details for standalone photorealistic video-generation prompts (Google \
+Flow, Omni Flash) from an approved real-world storyboard. All output is English. Recurring cast anchors, voice, music and \
+negative constraints are inserted separately: do not rewrite appearance anchors or the narrator voice. Describe the \
+setting, palette, composition, positions, props, visible actions, camera and sound effects.
+- beats: exactly three (0-3s, 3-7s, 7-10s). Split the clip's VO across them in order, copying every word exactly.
+- first_frame inherits the previous ending; final_frame sets up the next clip; stitch names the visual or editorial join.
+- Track who holds each prop and where it starts and ends. Keep faces, bodies, wardrobe and locations coherent.
+- No readable words, letters, numbers, interface text, logos or watermarks in generated footage.
+{style_rules}"""
+
 STYLE_RULES = {
     "1-light": "Style 1 Classic Minimalist, light theme: flat pure-white canvas, black line stick figure, up to three "
                "saturated accent colors on props and graphics only.",
@@ -109,6 +151,18 @@ STYLE_RULES = {
          "setting (an office, a metro platform, a cafe, a park...) with wide, close and tracking shots inside it; name "
          "each location and what carries over the cut (character, prop, direction, or a named time jump). Cozy is the "
          "visual warmth, not forced cheerfulness. Keep props' owners and states consistent across cuts.",
+    "g-logical": "Logical Explainer: real people demonstrate cause and effect with practical objects in real offices, "
+                 "workshops, homes and public spaces. Every visual must clarify the spoken reasoning.",
+    "g-tech": "Modern Tech: real people use grounded contemporary technology in offices, labs, studios and cities. "
+              "Keep interfaces unreadable and secondary to human actions; avoid fantasy holograms.",
+    "g-emotional": "Emotional Story: real people, intimate acting, meaningful props and cinematic real-world locations. "
+                   "Build emotion through behaviour, framing and light rather than melodrama.",
+    "g-educational": "Educational Documentary: real people, authentic locations, physical demonstrations and factual "
+                     "editorial cutaways. Never stage invented evidence or present fiction as fact.",
+    "g-satire": "Real-World Satire: real people perform grounded physical comedy in recognizable everyday places. Use "
+                "deadpan framing, reaction beats and visual irony without caricaturing anatomy.",
+    "g-lifestyle": "Cozy Lifestyle: real people in warm homes, cafes, parks, neighbourhoods and travel locations. Use "
+                   "natural interaction, tactile details and relaxed camera movement.",
 }
 
 VOICE_PREF = {
@@ -177,11 +231,15 @@ def propose(pid: str) -> None:
 def _outline(settings: DirectorSettings, previous: dict | None, feedback: str) -> ProposalHeader:
     style = STYLES[settings.style]
     n = settings.clips
-    stages = STAGES_5 if style.discussion_ending else STAGES_3
-    structure = (STRUCTURE_5.format(stages=", ".join(stages), n=n, allocation=_allocation(n)) if style.discussion_ending
-                 else STRUCTURE_3.format(stages=", ".join(stages)))
-    system = OUTLINE_SYSTEM.format(structure=structure, language=_language_note(settings), palette=style.palette_rule,
-                                   style_rules=STYLE_RULES[settings.style])
+    if settings.mode == "generic":
+        system = GENERIC_OUTLINE_SYSTEM.format(language=_language_note(settings), palette=style.palette_rule,
+                                               style_rules=STYLE_RULES[settings.style])
+    else:
+        stages = STAGES_5 if style.discussion_ending else STAGES_3
+        structure = (STRUCTURE_5.format(stages=", ".join(stages), n=n, allocation=_allocation(n))
+                     if style.discussion_ending else STRUCTURE_3.format(stages=", ".join(stages)))
+        system = OUTLINE_SYSTEM.format(structure=structure, language=_language_note(settings),
+                                       palette=style.palette_rule, style_rules=STYLE_RULES[settings.style])
     voice = VOICE_PREF.get(settings.voice) or f"The user asks for: {settings.voice_custom}. Expand it into a complete profile."
     prompt = (f"Clips: exactly {n} (total {settings.seconds} seconds), numbered 1-{n}; about {n * 20}-{n * 25} words "
               f"of VO in total.\nAspect ratio: {settings.aspect}. Style: {style.name}.\nVoice: {voice}\n"
@@ -204,7 +262,8 @@ def _outline(settings: DirectorSettings, previous: dict | None, feedback: str) -
 
 def _storyboard(pid: str, settings: DirectorSettings, header: ProposalHeader) -> list[StoryRow]:
     style = STYLES[settings.style]
-    system = STORYBOARD_SYSTEM.format(
+    template = GENERIC_STORYBOARD_SYSTEM if settings.mode == "generic" else STORYBOARD_SYSTEM
+    system = template.format(
         language=_language_note(settings), aspect=settings.aspect, composition=assemble.COMPOSITION[settings.aspect],
         devices=("use at least four relevant visual devices per clip;" if style.devices_rule else
                  "use as many devices as the joke needs, with reaction pauses;"),
@@ -237,7 +296,8 @@ def _storyboard(pid: str, settings: DirectorSettings, header: ProposalHeader) ->
 def _revise_clip(settings: DirectorSettings, proposal: dict, clip: int, feedback: str) -> dict:
     """Redo one clip of the proposal: its outline and storyboard row."""
     style = STYLES[settings.style]
-    system = STORYBOARD_SYSTEM.format(
+    template = GENERIC_STORYBOARD_SYSTEM if settings.mode == "generic" else STORYBOARD_SYSTEM
+    system = template.format(
         language=_language_note(settings), aspect=settings.aspect, composition=assemble.COMPOSITION[settings.aspect],
         devices="use at least four relevant visual devices;" if style.devices_rule else "use reaction pauses freely;",
         style_rules=STYLE_RULES[settings.style]) + (
@@ -290,7 +350,8 @@ def write_prompts(pid: str) -> None:
 
 def _prompt_details(settings: DirectorSettings, proposal: dict, batch: list[int], feedback: str) -> dict[int, dict]:
     style = STYLES[settings.style]
-    system = PROMPT_SYSTEM.format(style_rules=STYLE_RULES[settings.style])
+    template = GENERIC_PROMPT_SYSTEM if settings.mode == "generic" else PROMPT_SYSTEM
+    system = template.format(style_rules=STYLE_RULES[settings.style])
     clips, rows = proposal["clips"], proposal["rows"]
     lines = []
     for n in range(max(1, batch[0] - 1), min(len(clips), batch[-1] + 1) + 1):

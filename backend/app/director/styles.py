@@ -1,4 +1,6 @@
-"""Style library for stickman videos, from Stickman Video Director
+"""Style library for stickman and real-world director modes.
+
+The stickman styles come from Stickman Video Director
 (https://github.com/kaomei/stickman-video-director), MIT License,
 Copyright (c) 2026 Stickman Video Director contributors. See director/LICENSE.
 
@@ -81,6 +83,7 @@ class Style:
     per_clip_location: bool   # 2B, 3 and 4 describe a setting per clip
     devices_rule: bool = True  # at least four visual devices per clip (Style 3 overrides)
     discussion_ending: bool = True
+    generic: bool = False
 
 
 STYLES: dict[str, Style] = {s.id: s for s in [
@@ -129,6 +132,60 @@ STYLES: dict[str, Style] = {s.id: s for s in [
           "characters, no background clones, no pressure graphics leaking into calm scenes.",
           "Story-driven color and light per location, named in ordinary words",
           "a gentle story score with one recurring motif", True),
+    Style("g-logical", "Logical Explainer", "Logical",
+          "Clear reasoning, mental models, business ideas and step-by-step arguments",
+          "Photorealistic real people in practical offices, workshops, homes and public spaces. Use clean composition, "
+          "cause-and-effect actions, physical demonstrations and restrained cinematic lighting.",
+          "Negative constraints: no animation, abstract shape-only scenes, plastic skin, warped faces, extra fingers, "
+          "duplicate people, inconsistent wardrobe, logos, watermarks or unintended text.",
+          "Clean neutral palette with purposeful accent colors, named in ordinary words",
+          "precise understated score with a steady explanatory pulse", True,
+          discussion_ending=False, generic=True),
+    Style("g-tech", "Modern Tech", "Modern tech",
+          "AI, software, innovation, startups, productivity and future-facing topics",
+          "Photorealistic real people in contemporary offices, labs, studios and urban environments with practical "
+          "screens, glass, cool natural light and grounded technology interactions.",
+          "Negative constraints: no sci-fi spaceship interiors, floating fantasy interfaces, fake readable UI text, "
+          "plastic skin, warped hands, duplicate people, logos or watermarks.",
+          "Cool modern palette with controlled cyan or electric-blue accents, named in ordinary words",
+          "minimal electronic score with warm human texture", True,
+          discussion_ending=False, generic=True),
+    Style("g-emotional", "Emotional Story", "Emotional",
+          "Personal growth, relationships, motivation and human-centred brand stories",
+          "Photorealistic real people in expressive real-world locations with motivated practical lighting, intimate "
+          "close-ups, cinematic depth, natural gestures and emotionally meaningful objects.",
+          "Negative constraints: no melodramatic posing, plastic skin, warped faces or hands, duplicate people, sudden "
+          "wardrobe changes, floating props, logos, watermarks or unintended text.",
+          "Cinematic palette that follows the emotional arc, named in ordinary words",
+          "emotional cinematic score with one restrained recurring motif", True,
+          discussion_ending=False, generic=True),
+    Style("g-educational", "Educational Documentary", "Educational",
+          "History, science, news, how-things-work and evidence-led lessons",
+          "Grounded documentary imagery with real people, authentic locations, observational camera work, natural light, "
+          "physical demonstrations and clearly motivated editorial cutaways.",
+          "Negative constraints: no staged fiction presented as fact, invented documents or quotations, fake readable "
+          "labels, distorted faces, duplicate people, logos, watermarks or unintended text.",
+          "Naturalistic documentary palette with one consistent editorial accent, named in ordinary words",
+          "subtle documentary underscore that never overwhelms narration", True,
+          discussion_ending=False, generic=True),
+    Style("g-satire", "Real-World Satire", "Satire",
+          "Humour, social observations, ironic comparisons and playful commentary",
+          "Photorealistic real people in recognizable everyday locations, staged with deadpan framing, precise reaction "
+          "beats, visual irony and grounded physical comedy.",
+          "Negative constraints: no cartoon rendering, grotesque facial distortion, unsafe stunts, warped hands, duplicate "
+          "people, unexplained costume changes, logos, watermarks or unintended text.",
+          "Natural everyday palette with one comedic accent color, named in ordinary words",
+          "light rhythmic score with deliberate pauses for reactions", True, devices_rule=False,
+          discussion_ending=False, generic=True),
+    Style("g-lifestyle", "Cozy Lifestyle", "Lifestyle",
+          "Wellness, habits, food, travel, home, family and optimistic everyday stories",
+          "Photorealistic real people in warm homes, cafes, parks, neighbourhoods and travel locations with soft natural "
+          "light, tactile detail, relaxed camera movement and candid human interaction.",
+          "Negative constraints: no artificial showroom perfection, plastic skin, warped hands, duplicate people, abrupt "
+          "wardrobe or location drift, logos, watermarks or unintended text.",
+          "Warm story-led palette with natural materials and soft accents, named in ordinary words",
+          "gentle acoustic score with one recurring motif", True,
+          discussion_ending=False, generic=True),
 ]}
 
 
@@ -152,5 +209,7 @@ def music_lock(clip: int, music: str) -> str:
             "instrumentation, and narrative momentum. Synchronized crisp SFX on physical actions.")
 
 
-def public() -> list[dict]:
-    return [{"id": s.id, "name": s.name, "short": s.short, "best_for": s.best_for} for s in STYLES.values()]
+def public(mode: str = "stickman") -> list[dict]:
+    generic = mode == "generic"
+    return [{"id": s.id, "name": s.name, "short": s.short, "best_for": s.best_for}
+            for s in STYLES.values() if s.generic == generic]

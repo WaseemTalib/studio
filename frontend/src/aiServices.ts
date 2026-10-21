@@ -23,7 +23,7 @@ export function remember(service: string | null) {
 export function useAIServices(): AIServices | null {
   const [services, setServices] = useState<AIServices | null>(null)
   useEffect(() => {
-    api.aiServices().then(setServices, () => setServices({ services: [], default: null }))
+    api.aiServices().then(setServices, () => setServices({ services: [], default: null, chain: [] }))
   }, [])
   return services
 }

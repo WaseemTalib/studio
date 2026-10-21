@@ -16,8 +16,10 @@ Resolution = Literal["720p", "1080p", "4k"]
 # clip: AI picks highlights. full: keep the whole video (or timeframe), only caption and reframe.
 Mode = Literal["clip", "full"]
 ClipModel = Literal["fast", "quality"]
-# An AI service and model, "service:model" (e.g. "gemini:auto"); None uses the configured default.
-AIService = Annotated[str, StringConstraints(pattern=r"^(groq|gemini|openrouter|sambanova):\S+$", max_length=200)]
+# An AI service and model, "service:model" (e.g. "gemini:auto"), or "auto" for the automatic chain
+# (Claude → DeepSeek → Groq); None uses the configured default.
+AIService = Annotated[str, StringConstraints(
+    pattern=r"^(auto|(groq|claude|deepseek|deepseek-api|gemini|openrouter|sambanova):\S+)$", max_length=200)]
 
 
 class LookOptions(BaseModel):
@@ -29,8 +31,8 @@ class LookOptions(BaseModel):
     caption_position: Position = "bottom"
     highlight_color: str = CAPTION_STYLES["karaoke"].default_highlight
     words_per_line: int = Field(default=3, ge=1, le=6)
-    caption_size: int = Field(default=100, ge=50, le=200)     # percent of the style's font size
-    caption_offset: int = Field(default=0, ge=-30, le=30)     # percent of the frame height; negative moves up
+    caption_size: int = Field(default=50, ge=0, le=150)       # percent of the style's font size
+    caption_offset: int = Field(default=12, ge=-100, le=100)  # percent of available travel; negative moves up
     title_overlay: bool = False
     auto_zoom: bool = False          # alternate gentle punch-in zooms between sentences
     resolution: Resolution = "1080p"
@@ -236,7 +238,7 @@ class AddLibraryVoice(BaseModel):
 
 SourceKind = Literal["prompt", "description", "script", "news"]
 Footage = Literal["pexels", "pixabay", "both", "none"]  # before several sources could be chosen
-FootageSource = Literal["pixabay", "pexels", "coverr", "commons", "unsplash"]
+FootageSource = Literal["openverse", "web", "youtube", "pixabay", "pexels", "coverr", "commons", "unsplash"]
 
 
 SEARCH_TERMS_HELP = ("4-6 English stock-footage searches of 2-3 words, in the order the narration mentions "
@@ -300,7 +302,8 @@ class StockMedia(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    provider: Literal["pexels", "pixabay", "coverr", "commons", "wikimedia", "unsplash", "upload"]
+    provider: Literal["openverse", "web", "searxng", "duckduckgo", "youtube", "pexels", "pixabay", "coverr",
+                      "commons", "wikimedia", "unsplash", "upload"]
     id: str = Field(max_length=300)
     link: str = Field(max_length=2000)
     width: int
@@ -360,8 +363,8 @@ class VideoRequest(BaseModel):
     caption_position: Position = "bottom"
     highlight_color: str = CAPTION_STYLES["simple"].default_highlight
     words_per_line: int = Field(default=4, ge=1, le=8)
-    caption_size: int = Field(default=100, ge=50, le=200)
-    caption_offset: int = Field(default=0, ge=-30, le=30)
+    caption_size: int = Field(default=50, ge=0, le=150)
+    caption_offset: int = Field(default=12, ge=-100, le=100)
     title_overlay: bool = False
     music: str | None = Field(default=None, max_length=200)  # file name in the music library
     # track: `music` (or none); random: any track in the library; auto: a free track matching music_mood

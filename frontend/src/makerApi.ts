@@ -3,9 +3,12 @@ import type { TTSProvider, VoiceSettings } from './voiceApi'
 
 export type SourceKind = 'prompt' | 'description' | 'script' | 'news'
 export type Footage = 'pexels' | 'pixabay' | 'both' | 'none'
-export type FootageSource = 'pixabay' | 'pexels' | 'coverr' | 'commons' | 'unsplash'
+export type FootageSource = 'openverse' | 'web' | 'youtube' | 'pixabay' | 'pexels' | 'coverr' | 'commons' | 'unsplash'
 
 export const FOOTAGE_SOURCES: { id: FootageSource; label: string; hint: string; key: string; signup: string }[] = [
+  { id: 'openverse', label: 'Openverse', hint: 'live Creative Commons image search', key: '', signup: '' },
+  { id: 'web', label: 'Web images', hint: 'live search · review usage rights', key: '', signup: '' },
+  { id: 'youtube', label: 'YouTube', hint: 'real video results · review usage rights', key: 'yt-dlp', signup: 'installed with the backend' },
   { id: 'pixabay', label: 'Pixabay', hint: 'stock video', key: 'PIXABAY_API_KEY', signup: 'pixabay.com/api/docs' },
   { id: 'pexels', label: 'Pexels', hint: 'stock video', key: 'PEXELS_API_KEY', signup: 'pexels.com/api' },
   { id: 'coverr', label: 'Coverr', hint: 'cinematic stock video', key: 'COVERR_API_KEY', signup: 'email team@coverr.co' },
@@ -17,7 +20,8 @@ export type MakerStage = 'voice' | 'captions' | 'footage' | 'render'
 /** A stock clip or photo, as found by a footage search. */
 export interface Media {
   key: string
-  provider: 'pexels' | 'pixabay' | 'coverr' | 'commons' | 'wikimedia' | 'unsplash' | 'upload'
+  provider: 'openverse' | 'web' | 'searxng' | 'duckduckgo' | 'youtube' | 'pexels' | 'pixabay' | 'coverr' |
+    'commons' | 'wikimedia' | 'unsplash' | 'upload'
   id: string
   link: string
   width: number

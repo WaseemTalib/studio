@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import {
   api,
   captionPreviewUrl,
+  DEFAULT_CAPTION_OFFSET,
+  DEFAULT_CAPTION_SIZE,
   formatClock,
   formatTime,
   parseTime,
@@ -34,8 +36,8 @@ const DEFAULTS: ProjectOptions = {
   caption_position: 'bottom',
   highlight_color: '#04f827',  // Karaoke's own green
   words_per_line: 3,
-  caption_size: 100,
-  caption_offset: 0,
+  caption_size: DEFAULT_CAPTION_SIZE,
+  caption_offset: DEFAULT_CAPTION_OFFSET,
   title_overlay: false,
   auto_zoom: false,
   resolution: '1080p',
