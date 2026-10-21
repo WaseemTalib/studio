@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation } from 'react-router-dom'
 import {
-  api, captionPreviewUrl, DEFAULT_CAPTION_OFFSET, DEFAULT_CAPTION_SIZE, formatEta, formatTime,
+  api, canSwitchLimit, captionPreviewUrl, DEFAULT_CAPTION_OFFSET, DEFAULT_CAPTION_SIZE, formatEta, formatTime,
   type LimitState, type LookOptions, type Presets,
 } from '../api'
 import { LimitDialog, LimitLine } from '../components/LimitDialog'
@@ -713,7 +713,8 @@ function VideoCard({ video, onUpdate, onRemoved, onReuse, onError }: {
           {video.status === 'done' && video.video && (
             <a className="button small-btn" href={video.video} download={`${video.title}.mp4`}>Download</a>
           )}
-          {working && video.limit?.mode === 'wait' && <button className="small-btn" onClick={() => setLimitOpen(true)}>Switch instead…</button>}
+          {working && video.limit && canSwitchLimit(video.limit) &&
+            <button className="small-btn" onClick={() => setLimitOpen(true)}>Switch model now…</button>}
           {working && (
             <button className="link danger" disabled={video.cancelling}
               onClick={() => confirm(`Stop making “${video.title}”?`) && call(makerApi.cancel(video.id))}>Cancel</button>
@@ -741,7 +742,8 @@ function VideoCard({ video, onUpdate, onRemoved, onReuse, onError }: {
           </details>
         )}
       </div>
-      {working && video.limit && !video.cancelling && (video.limit.mode === 'ask' || (video.limit.mode === 'wait' && limitOpen)) && (
+      {working && video.limit && !video.cancelling &&
+        (video.limit.mode === 'ask' || (canSwitchLimit(video.limit) && limitOpen)) && (
         <LimitDialog state={video.limit} onClose={() => setLimitOpen(false)}
           onChoose={async (action, option) => onUpdate(await makerApi.limitChoice(video.id, action, option))}
           onCancel={async () => onUpdate(await makerApi.cancel(video.id))}

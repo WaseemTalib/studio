@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { formatEta } from '../api'
+import { canSwitchLimit, formatEta } from '../api'
 import { rememberedService, useAIServices } from '../aiServices'
 import AIModelSelect from '../components/AIModelSelect'
 import { LimitDialog, LimitLine } from '../components/LimitDialog'
@@ -105,10 +105,10 @@ export default function StickmanDirector({ mode = 'stickman' }: { mode?: 'stickm
           <h1>{generic ? 'Video Director' : 'Stickman Director'}</h1>
           {generic ? (
             <p className="muted">Turn a topic, script or article into a production-ready plan for real people and
-              real-world scenes, then create consistent Google Flow prompts for every ten-second clip.</p>
+              real-world scenes, then create character-locked Google Flow prompts for every ten-second clip.</p>
           ) : (
             <p className="muted">Turn a topic, script or article into a stickman animation plan: a director’s proposal to
-              review, then ready-to-paste Google Flow (Omni Flash) prompts for every ten-second clip.{' '}
+              review, then ready-to-paste Google Flow (Omni Flash) prompts with a character consistency skill.{' '}
               <a href="https://github.com/kaomei/stickman-video-director" target="_blank" rel="noreferrer">Based on Stickman Video Director</a> (MIT).</p>
           )}
         </div>
@@ -349,7 +349,8 @@ function PlanView({ plan, styles, services, api, generic, onUpdate, onError, onC
         {plan.status === 'failed' && <p className="error small">{plan.error}</p>}
         <div className="row">
           {writing && <button className="link danger" disabled={plan.cancelling} onClick={() => call(api.cancel(plan.id))}>Cancel</button>}
-          {writing && plan.limit?.mode === 'wait' && <button className="small-btn" onClick={() => setLimitOpen(true)}>Switch instead…</button>}
+          {writing && plan.limit && canSwitchLimit(plan.limit) &&
+            <button className="small-btn" onClick={() => setLimitOpen(true)}>Switch model now…</button>}
           {!writing && (plan.status === 'failed' || plan.status === 'cancelled') && (
             <button className="small-btn" onClick={() => call(api.retry(plan.id))}>Retry</button>
           )}
@@ -396,7 +397,8 @@ function PlanView({ plan, styles, services, api, generic, onUpdate, onError, onC
       {plan.package && <PackageView plan={plan} pkg={plan.package} disabled={writing}
         api={api} generic={generic} onRewrite={(clip, text) => call(api.rewriteClip(plan.id, clip, text))} />}
 
-      {writing && plan.limit && !plan.cancelling && (plan.limit.mode === 'ask' || (plan.limit.mode === 'wait' && limitOpen)) && (
+      {writing && plan.limit && !plan.cancelling &&
+        (plan.limit.mode === 'ask' || (canSwitchLimit(plan.limit) && limitOpen)) && (
         <LimitDialog state={plan.limit} onClose={() => setLimitOpen(false)}
           onChoose={async (action, option) => onUpdate(await api.limitChoice(plan.id, action, option))}
           onCancel={async () => onUpdate(await api.cancel(plan.id))} cancelPrompt="Stop writing this plan?" />
@@ -523,6 +525,17 @@ function PackageView({ plan, pkg, disabled, api, generic, onRewrite }: {
         <summary><strong>Global continuity block</strong></summary>
         <pre className="director-prompt">{pkg.global_block}</pre>
       </details>
+      {pkg.character_reference_prompt && (
+        <details className="director-skill" open>
+          <summary><strong>Character consistency skill</strong></summary>
+          <p className="muted small">{pkg.character_guide}</p>
+          <div className="section-title-row">
+            <span className="small">Create this reference once, then reuse it for every clip.</span>
+            <CopyButton text={pkg.character_reference_prompt} label="Copy reference prompt" />
+          </div>
+          <pre className="director-prompt">{pkg.character_reference_prompt}</pre>
+        </details>
+      )}
       {pkg.clips.map((c) => (
         <div key={c.clip} className="director-prompt-card">
           <div className="director-clip-head">
@@ -548,7 +561,7 @@ function PackageView({ plan, pkg, disabled, api, generic, onRewrite }: {
         <ul className="small">{pkg.stitching.map((x) => <li key={x}>{x}</li>)}</ul>
       </div>
       <div>
-        <strong>Voice and music continuity</strong>
+        <strong>Voice, music and no-gap continuity</strong>
         <p className="small">{pkg.audio_note}</p>
       </div>
       <details open={pkg.checks.some((c) => !c.ok)}>

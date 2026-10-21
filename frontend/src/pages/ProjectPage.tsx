@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { api, formatTime, isWorking, type Clip, type Project } from '../api'
+import { api, canSwitchLimit, formatTime, isWorking, type Clip, type Project } from '../api'
 import { layoutLabel } from '../components/LookControls'
 import { LimitDialog, LimitLine } from '../components/LimitDialog'
 import ProjectStatus, { CancelButton } from '../components/ProjectStatus'
@@ -84,10 +84,10 @@ export default function ProjectPage() {
           </button>
         </div>
       )}
-      {working && project.limit?.mode === 'wait' && (
+      {working && project.limit && canSwitchLimit(project.limit) && (
         <div className="notice limit-notice">
           <p><LimitLine state={project.limit} /></p>
-          <button onClick={() => setLimitOpen(true)}>Switch instead…</button>
+          <button onClick={() => setLimitOpen(true)}>Switch model now…</button>
         </div>
       )}
       {working && !project.limit && (
@@ -96,7 +96,7 @@ export default function ProjectPage() {
         </div>
       )}
       {working && project.limit && !project.cancelling
-        && (project.limit.mode === 'ask' || (project.limit.mode === 'wait' && limitOpen)) && (
+        && (project.limit.mode === 'ask' || (canSwitchLimit(project.limit) && limitOpen)) && (
         <LimitDialog state={project.limit} onClose={() => setLimitOpen(false)}
           onChoose={async (action, option) => setProject(await api.limitChoice(project.id, action, option))}
           onCancel={async () => setProject(await api.cancelProject(project.id))}

@@ -40,7 +40,7 @@ Hosted services have usage limits (Groq's free tier: tokens per minute and per d
 audio seconds per hour and per day for transcription). When one is reached:
 
 - **Per-minute limits** are waited out automatically; the progress bar shows the countdown and the
-  tokens left.
+  tokens left. Click **Switch model now…** at any point to continue immediately with another available model.
 - **Longer limits** pause the project and open a dialog with the exact numbers (allowance, used,
   remaining, what the request needs, and when it frees up). You choose: **wait** (it continues by itself
   when the limit frees up), **switch** to another option, or cancel. Nothing switches on its own, and
@@ -131,7 +131,10 @@ workflow as Stickman Director, while keeping its projects and prompt rules separ
 Choose a real-world visual mode based on the story's intent: **Logical Explainer**, **Modern Tech**, **Emotional Story**,
 **Educational Documentary**, **Real-World Satire** or **Cozy Lifestyle**. The generated plan preserves recurring people's
 identity, appearance, wardrobe and props across ten-second clips, provides three timed visual beats per clip, and exports
-ready-to-paste Google Flow prompts, a Markdown plan and English subtitles.
+ready-to-paste Google Flow prompts, a reusable character-reference-sheet prompt, a Markdown plan and English subtitles.
+Each clip repeats the complete cast bible and an immutable identity skill; only the roles named for that clip are rendered.
+The same narrator profile is repeated verbatim, speech begins on the first frame and picture, narration and background
+audio continue through every beat and clip boundary without blank or frozen sections.
 
 ## Stickman Director
 
@@ -148,8 +151,10 @@ Modern Studio Tech, Cinematic Story, Prehistoric Dark Comedy or Cozy Storytellin
    settings (which recomposes it and clears approval).
 2. **Production prompts** after approval: a global continuity block, N standalone Google Flow (Omni Flash) prompts
    in the skill's 12-part order, a stitching guide and voice/music notes. The character anchors, voice block, music
-   lock and negative constraints are inserted verbatim by code, so every clip carries identical locks. Rewrite any
-   single prompt with feedback. The skill's checklists run on both phases.
+   lock and negative constraints are inserted verbatim by code, so every clip carries identical locks. A character
+   consistency skill also creates a reusable model-sheet prompt and repeats the full immutable character bible in every
+   clip. A no-gap continuity skill locks one narrator voice and continuous picture, narration, music and room tone across
+   every clip. Rewrite any single prompt with feedback. The skill's checklists run on both phases.
 3. **Export**: the whole plan as Markdown and English subtitles as `.srt` for editing.
 
 Generating the clips happens in Google Flow; the app plans and writes the prompts.

@@ -78,7 +78,11 @@ export interface ClipPrompt {
 }
 
 export interface Package {
+  prompt_skills_version?: number
+  character_consistency_version?: number
   global_block: string
+  character_guide?: string
+  character_reference_prompt?: string
   clips: ClipPrompt[]
   stitching: string[]
   audio_note: string

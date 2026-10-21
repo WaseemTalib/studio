@@ -643,14 +643,17 @@ def maker_music_add(body: MusicTrack) -> dict:
 
 
 def _plan_live(plan: dict | None) -> dict | None:
-    return None if plan is None else {**plan, **runner.live_status(plan["id"])}
+    if plan is None:
+        return None
+    refreshed = director_plan.refresh_saved(plan)
+    return {**refreshed, **runner.live_status(refreshed["id"])}
 
 
 def _plan_or_404(pid: str, mode: str | None = None) -> dict:
     plan = db.get_plan(pid)
     if plan is None or (mode and plan["settings"].get("mode", "stickman") != mode):
         raise HTTPException(404, "Plan not found")
-    return plan
+    return director_plan.refresh_saved(plan)
 
 
 def _plan_idle(plan: dict) -> None:
@@ -663,8 +666,8 @@ def _director_options(mode: str) -> dict:
 
 
 def _director_plans(mode: str) -> list[dict]:
-    return [{**p, **runner.live_status(p["id"])} for p in db.list_plans()
-            if p["settings"].get("mode", "stickman") == mode]
+    return [{**plan, **runner.live_status(plan["id"])} for plan in db.list_plans()
+            if plan["settings"].get("mode", "stickman") == mode]
 
 
 def _director_create(body: director_models.DirectorSettings, mode: str) -> dict:

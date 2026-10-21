@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { LimitInfo, LimitState } from '../api'
+import { canSwitchLimit, type LimitInfo, type LimitState } from '../api'
 import { formatWait, useCountdown } from '../useCountdown'
 
 /** "200,000 tokens", "7,200 audio seconds (2h 00m)". */
@@ -14,7 +14,7 @@ function amount(value: number | null, code: string | null): string {
 
 const STAGE: Record<string, string> = {
   transcribe: 'Transcription', highlights: 'Finding highlights', script: 'Writing the script',
-  captions: 'Caption timing', footage: 'Finding stock footage', director: 'Writing the stickman plan',
+  captions: 'Caption timing', footage: 'Finding stock footage', director: 'Writing the director plan',
 }
 
 function LimitFacts({ info, left }: { info: LimitInfo; left: number | null }) {
@@ -51,12 +51,17 @@ export function LimitDialog({ state, onChoose, onCancel, cancelPrompt, onClose }
   onClose?: () => void
 }) {
   const left = useCountdown(state.limit.resets_in)
-  const [pick, setPick] = useState<string>('wait')
+  const [pick, setPick] = useState<string>(() =>
+    state.mode === 'ask' ? 'wait' : state.options.find((option) => option.available)?.id ?? 'wait')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const waiting = state.mode === 'wait'
+  const waiting = state.mode !== 'ask'
 
   async function submit() {
+    if (state.mode === 'auto_wait' && pick === 'wait') {
+      onClose?.()
+      return
+    }
     setBusy(true)
     setError(null)
     try {
@@ -86,8 +91,9 @@ export function LimitDialog({ state, onChoose, onCancel, cancelPrompt, onClose }
           <h2>{state.limit.service_label} usage limit reached</h2>
           {waiting && <button type="button" className="ghost" onClick={onClose} aria-label="Close">✕</button>}
         </div>
-        <p className="muted small">
-          {STAGE[state.stage ?? ''] ?? 'Processing'} is paused. Nothing switches until you choose{onCancel ? '; finished work is kept' : ''}.
+        <p className="muted small">{waiting
+          ? `${STAGE[state.stage ?? ''] ?? 'Processing'} resumes automatically at reset, or switch now and continue.`
+          : `${STAGE[state.stage ?? ''] ?? 'Processing'} is paused. Choose a model, wait for reset${onCancel ? ', or cancel without losing finished work' : ''}.`}
         </p>
         <LimitFacts info={state.limit} left={left} />
 
@@ -95,7 +101,7 @@ export function LimitDialog({ state, onChoose, onCancel, cancelPrompt, onClose }
           <label className={`limit-option ${pick === 'wait' ? 'on' : ''}`}>
             <input type="radio" name="limit-choice" checked={pick === 'wait'} onChange={() => setPick('wait')} />
             <span>
-              <strong>{waiting ? 'Keep waiting' : 'Wait until it frees up'}</strong>
+              <strong>{waiting ? 'Keep waiting for reset' : 'Wait until it frees up'}</strong>
               <span className="muted small">
                 Continues with {state.limit.model} automatically{left != null ? ` in about ${formatWait(left)}` : ''}.
               </span>
@@ -133,5 +139,6 @@ export function LimitLine({ state }: { state: LimitState }) {
   const rest = left != null ? formatWait(left) : '…'
   if (state.mode === 'wait') return <span className="limit-line">Waiting for {l.service_label}'s {l.name} limit · continues in {rest}</span>
   const tokens = l.remaining != null && l.limit != null ? ` (${Math.round(l.remaining).toLocaleString()} of ${Math.round(l.limit).toLocaleString()} left)` : ''
-  return <span className="limit-line">Waiting {rest} for {l.service_label}'s {l.name} limit{tokens}</span>
+  return <span className="limit-line">Waiting {rest} for {l.service_label}'s {l.name} limit{tokens}
+    {canSwitchLimit(state) && ' · model switch available'}</span>
 }

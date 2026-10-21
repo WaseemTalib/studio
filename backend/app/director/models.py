@@ -8,6 +8,8 @@ from ..schemas import AIService
 from .styles import STYLES
 
 MAX_SECONDS = 300
+MIN_CLIP_WORDS = 15
+MAX_CLIP_WORDS = 30
 STAGES_5 = ["Golden Hook", "Disrupting Assumptions", "Unveiling Insider Secrets", "Ultimate Truth Revelation",
             "Elevation & Discussion"]
 STAGES_3 = ["Setup", "Escalation", "Ironic Payoff"]  # Style 3 story rhythm
@@ -63,10 +65,12 @@ class PaletteItem(BaseModel):
 
 class CastCard(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    role: str = Field(description="Short recurring subject or character name, e.g. 'Founder', 'Hero', 'Product'")
-    anchor: str = Field(description="Complete English appearance description repeated verbatim in every prompt "
-                                    "where the role appears: role and age range, proportions, hair, eyes/brows, "
-                                    "costume silhouette, one recognizable accessory")
+    role: str = Field(description="Short unique role ID reused exactly in storyboard roles, e.g. 'Founder' or 'Hero'")
+    anchor: str = Field(description="Complete immutable English identity description repeated verbatim in every prompt: "
+                                    "visual medium, approximate age, build/proportions, face or head geometry, hair, "
+                                    "wardrobe silhouette and colors, footwear, one recognizable accessory, and owned props "
+                                    "as applicable. "
+                                    "Exclude temporary pose, expression, camera, lighting and location details")
     summary: str = Field(description="One-line summary in the planning language")
 
 
@@ -95,7 +99,8 @@ class ProposalHeader(BaseModel):
     voice_summary: str = Field(description="The narrator's voice profile summarized in the planning language")
     voice_block: str = Field(description="Complete self-contained English voice block: identity/age, accent, timbre, "
                                          "pitch/register, resonance, texture, delivery, pace, recording treatment, "
-                                         "and that the voice never changes across clips")
+                                         "that the voice never changes across clips, and uninterrupted delivery from "
+                                         "the first through final frame")
     palette: list[PaletteItem]
     environment_mood: str = Field(description="Palette/environment mood in the planning language")
     music: str = Field(description="Frozen English description of the score, e.g. 'quiet, thoughtful piano and "
@@ -111,7 +116,8 @@ class StoryRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
     clip: int
     scene: str = Field(description="The scene, in the planning language")
-    beats: list[str] = Field(description="Exactly three beats for 0-3s, 3-7s and 7-10s, in the planning language")
+    beats: list[str] = Field(min_length=3, max_length=3,
+                             description="Exactly three beats for 0-3s, 3-7s and 7-10s, in the planning language")
     devices: list[str] = Field(description="Visual devices used (at least four): action, transformation, metaphor, "
                                            "icon, particles/light, camera move, foreground wipe, match cut...")
     camera: str = Field(description="Motion, camera and transition, in the planning language")
@@ -120,6 +126,21 @@ class StoryRow(BaseModel):
     end_state: str = Field(description="The ending state the next clip inherits (pose, prop, direction, or a named "
                                        "location/time cut), in the planning language")
     roles: list[str] = Field(description="Cast roles visible in this clip (empty for a single default figure)")
+
+    @field_validator("beats", mode="before")
+    @classmethod
+    def _three_beats(cls, value: list[str]) -> list[str]:
+        beats = [str(beat).strip() for beat in value if str(beat).strip()]
+        if len(beats) < 3:
+            raise ValueError("every storyboard row needs three non-empty timed beats")
+        return beats[:3]
+
+    @field_validator("end_state")
+    @classmethod
+    def _ending(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("every storyboard row needs a non-empty ending state")
+        return value.strip()
 
 
 class StoryRows(BaseModel):

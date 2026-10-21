@@ -4,7 +4,8 @@ A provider that hits a limit raises LimitReached with the details it got back (w
 how much is used, how long until it frees up). handle() then decides:
 
 - A per-minute limit is waited out automatically: it clears within a minute and long
-  transcripts hit it on almost every request. The wait is shown on the project.
+  transcripts hit it on almost every request. The wait and switch options are shown on the project,
+  so the user can move to another model immediately.
 - Anything longer is put to the user through the job's Decider (bound per worker thread by
   the runner): wait for the reset, switch to another option, or cancel the project.
 
@@ -197,7 +198,7 @@ class Decider(Protocol):
 
     def ask(self, stage: str, limit: Limit, options: list[Option]) -> Choice: ...
     def wait(self, stage: str, limit: Limit, options: list[Option]) -> Choice | None: ...
-    def notice(self, limit: Limit) -> None: ...
+    def auto_wait(self, stage: str, limit: Limit, options: list[Option]) -> Choice | None: ...
     def clear(self) -> None: ...
 
 
@@ -228,15 +229,25 @@ def handle(stage: str, limit: Limit, options: list[Option]) -> str | None:
     LimitReached when there is nobody to ask (no project job)."""
     d = _current()
     key = (stage, limit.service, limit.model, limit.code)
-    if limit.short or (d and key in d.patient):
-        if d:
-            d.notice(limit)
-        try:
+    if limit.short:
+        if d is None:
             cancel.sleep(limit.retry_after + 0.5)
-        finally:
-            if d:
-                d.clear()
-        return None
+            return None
+        choice = d.auto_wait(stage, limit, options)
+        while choice is not None and choice.action == "wait":
+            choice = d.auto_wait(stage, limit, options)
+        if choice is None:
+            return None
+        d.overrides[stage] = choice.option
+        return choice.option
+    if d and key in d.patient:
+        choice = d.wait(stage, limit, options)
+        while choice is not None and choice.action == "wait":
+            choice = d.wait(stage, limit, options)
+        if choice is None:
+            return None
+        d.overrides[stage] = choice.option
+        return choice.option
     if d is None:
         raise LimitReached(limit)
     choice = d.ask(stage, limit, options)

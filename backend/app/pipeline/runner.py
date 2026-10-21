@@ -63,10 +63,11 @@ class _Decider:
         left = max(0.0, limit.retry_after - (time.time() - limit.seen_at)) + 1.0
         return self._await("wait", stage, limit, options, time.time() + left)
 
-    def notice(self, limit: limits.Limit) -> None:
-        with self._lock:
-            self._state = {"mode": "auto_wait", "stage": None, "limit": limit, "options": [],
-                           "until": time.time() + limit.retry_after + 0.5, "since": time.time()}
+    def auto_wait(self, stage: str, limit: limits.Limit,
+                  options: list[limits.Option]) -> limits.Choice | None:
+        """Wait out a short limit while still accepting an immediate switch."""
+        left = max(0.0, limit.retry_after - (time.time() - limit.seen_at)) + 0.5
+        return self._await("auto_wait", stage, limit, options, time.time() + left)
 
     def clear(self) -> None:
         with self._lock:
@@ -96,7 +97,7 @@ class _Decider:
         """From the API: the user's answer to the open question or ongoing wait."""
         with self._lock:
             state = self._state
-            if state is None or state["mode"] not in ("ask", "wait"):
+            if state is None or state["mode"] not in ("ask", "wait", "auto_wait"):
                 raise ValueError("There is no usage-limit question open for this project")
             if action == "switch":
                 allowed = {o.id for o in state["options"] if o.available}

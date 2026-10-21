@@ -21,11 +21,11 @@ _CLASSIC = ("Use minimalist two-dimensional {ink} line animation. Show the same 
 # The skill allows occasional simple expressions by default; a faceless figure keeps the base unchanged.
 _FACE_SWAP = ("no face, no eyes, no mouth,", "occasional simple line expressions, no detailed facial features,")
 
-BEANIE_FIRST = ("A minimalist 2D animated stick figure wearing a bright red beanie (smooth rounded knit, no pom-pom) and "
-                "a yellow t-shirt, with simple black stick limbs and shorts. Simple black lines, vibrant colors, smooth "
-                "2D animation style.")
-BEANIE_NEXT = ("The same minimalist 2D animated stick figure in a bright red beanie and yellow shirt... Simple black "
-               "lines, vibrant colors, smooth 2D animation style.")
+BEANIE_ANCHOR = ("One minimalist 2D animated stick figure with a hollow circular head, simple black line limbs, stable "
+                 "head-to-body proportions and uniform medium line weight. The figure always wears the same bright red "
+                 "smooth rounded knit beanie with no pom-pom, the same plain yellow t-shirt and the same black shorts. "
+                 "Exactly two arms and two legs are visible. Keep this complete design, clothing silhouette and colors "
+                 "identical in every shot; only pose and simple line expression may change.")
 
 COZY_ANCHOR = ("One minimalist 2D cartoon protagonist with a white filled circular head, two small dark oval eyes, simple "
                "eyebrow strokes and a short curved mouth. The torso is a slim closed tapered shape with solid white fill "
@@ -122,7 +122,7 @@ STYLES: dict[str, Style] = {s.id: s for s in [
           + PREHISTORIC_GRAMMAR,
           "Negative constraints: no photorealistic skin, no glossy 3D characters, no modern studio UI, no extra "
           "humans, no duplicate props, no unintended identity or costume changes.",
-          "Earthy palette with warm fire accents, named in ordinary words", "understated primitive percussion with dry pauses",
+          "Earthy palette with warm fire accents, named in ordinary words", "understated primitive percussion with a steady sparse pulse",
           True, devices_rule=False, discussion_ending=False),
     Style("4", "Style 4 · Cozy Storytelling", "Cozy storytelling",
           "Relatable life stories, emotional growth, educational storytelling",
@@ -175,7 +175,7 @@ STYLES: dict[str, Style] = {s.id: s for s in [
           "Negative constraints: no cartoon rendering, grotesque facial distortion, unsafe stunts, warped hands, duplicate "
           "people, unexplained costume changes, logos, watermarks or unintended text.",
           "Natural everyday palette with one comedic accent color, named in ordinary words",
-          "light rhythmic score with deliberate pauses for reactions", True, devices_rule=False,
+          "light rhythmic score with a continuous pulse and accented reaction beats", True, devices_rule=False,
           discussion_ending=False, generic=True),
     Style("g-lifestyle", "Cozy Lifestyle", "Lifestyle",
           "Wellness, habits, food, travel, home, family and optimistic everyday stories",
@@ -195,7 +195,7 @@ def character_anchor(style: str, clip: int, faceless: bool) -> str:
         text = _CLASSIC.format(ink="white" if style == "1-dark" else "black")
         return text if faceless else text.replace(*_FACE_SWAP)
     if style in ("2a", "2b"):
-        return BEANIE_FIRST if clip == 0 else BEANIE_NEXT
+        return BEANIE_ANCHOR
     if style == "4":
         return COZY_ANCHOR
     return PREHISTORIC_GRAMMAR
