@@ -19,7 +19,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
 from . import db, presets, tts
-from .config import MUSIC_DIR, PROJECTS_DIR, VIDEOS_DIR, VOICE_DIR
+from .config import (AUTH_PASSWORD, AUTH_USER, CORS_ORIGINS, FRONTEND_DIST, MUSIC_DIR, PROJECTS_DIR, VIDEOS_DIR,
+                     VOICE_DIR)
 from .director import assemble as director_assemble, models as director_models, plan as director_plan, \
     styles as director_styles
 from .maker import footage, make, music, script, shots, uploads
@@ -35,10 +36,34 @@ logging.basicConfig(level=logging.INFO)
 app = FastAPI(title="Shortcut Studio API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origins=CORS_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+if AUTH_PASSWORD:
+    import base64
+    import secrets
+
+    from starlette.middleware.base import BaseHTTPMiddleware
+
+    class _BasicAuth(BaseHTTPMiddleware):
+        """Browser login for a public server; on only when SHORTCUT_AUTH_PASSWORD is set."""
+
+        async def dispatch(self, request, call_next):
+            header = request.headers.get("authorization", "")
+            if header.lower().startswith("basic "):
+                try:
+                    user, _, password = base64.b64decode(header[6:]).decode().partition(":")
+                except (ValueError, UnicodeDecodeError):
+                    user = password = ""
+                if secrets.compare_digest(user.encode(), AUTH_USER.encode()) and \
+                        secrets.compare_digest(password.encode(), AUTH_PASSWORD.encode()):
+                    return await call_next(request)
+            return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="Shortcut Studio"'})
+
+    app.add_middleware(_BasicAuth)
+
 app.mount("/media", StaticFiles(directory=PROJECTS_DIR), name="media")
 app.mount("/voice-media", StaticFiles(directory=VOICE_DIR), name="voice-media")
 app.mount("/video-media", StaticFiles(directory=VIDEOS_DIR), name="video-media")
@@ -955,3 +980,20 @@ def cancel_active_task(
     else:
         _director_cancel(task_id, "stickman")
     return Response(status_code=204)
+
+
+# The built frontend, served last so every /api and media route above wins. Any other path returns
+# index.html so the browser router can show the page. Skipped when the frontend hasn't been built
+# (locally the Vite dev server serves it instead).
+if (FRONTEND_DIST / "index.html").is_file():
+    if (FRONTEND_DIST / "assets").is_dir():
+        app.mount("/assets", StaticFiles(directory=FRONTEND_DIST / "assets"), name="assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def frontend(path: str) -> FileResponse:
+        if path.startswith("api/"):
+            raise HTTPException(404, "Not found")
+        file = (FRONTEND_DIST / path).resolve()
+        if path and file.is_file() and file.is_relative_to(FRONTEND_DIST):
+            return FileResponse(file)
+        return FileResponse(FRONTEND_DIST / "index.html", headers={"Cache-Control": "no-cache"})

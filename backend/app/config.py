@@ -16,6 +16,19 @@ PROJECTS_DIR = DATA_DIR / "projects"
 
 _HAS_GROQ = bool(os.environ.get("GROQ_API_KEY"))
 
+# Server. Locally the defaults match `uvicorn app.main:app`; on a live server pick a free port and put
+# your web server (Apache/nginx) in front of it. `python -m app` starts uvicorn with these.
+HOST = os.environ.get("SHORTCUT_HOST", "127.0.0.1")
+PORT = int(os.environ.get("SHORTCUT_PORT", "8000"))
+# Extra origins allowed to call the API from another address (the Vite dev server is always allowed).
+CORS_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173",
+                *(o.strip().rstrip("/") for o in os.environ.get("SHORTCUT_CORS_ORIGINS", "").split(",") if o.strip())]
+# Built frontend (`npm run build`). When it exists the backend serves it, so one process runs the whole app.
+FRONTEND_DIST = Path(os.environ.get("SHORTCUT_FRONTEND_DIST", BACKEND_DIR.parent / "frontend" / "dist")).resolve()
+# Optional login for a public server: when set, every request needs this username and password.
+AUTH_USER = os.environ.get("SHORTCUT_AUTH_USER", "admin")
+AUTH_PASSWORD = os.environ.get("SHORTCUT_AUTH_PASSWORD", "")
+
 # Claude and DeepSeek through AgentRouter (agentrouter.org), OpenAI-compatible. Requests identify as Shortcut
 # Studio; AGENTROUTER_HEADERS (JSON) adds any client headers AgentRouter asked you to send.
 AGENTROUTER_API_KEY = os.environ.get("AGENTROUTER_API_KEY", "")  # one key for both, if you have only one

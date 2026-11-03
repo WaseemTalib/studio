@@ -28,6 +28,22 @@ npm install
 npm run dev
 ```
 
+### Live server
+
+On a server one process runs everything: after `npm run build` the backend also serves the frontend.
+
+```sh
+cd frontend && npm ci && npm run build && cd ..
+cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && cd ..
+cp backend/.env.example backend/.env   # add keys, plus SHORTCUT_PORT (a free port) and SHORTCUT_AUTH_PASSWORD
+./studio.sh start                      # also: stop | restart | status | update (git pull + rebuild + restart)
+```
+
+Point the domain at it with a reverse proxy to `http://127.0.0.1:<SHORTCUT_PORT>` (for Apache, in the site's
+`.htaccess`: `RewriteEngine On` and `RewriteRule ^(.*)$ http://127.0.0.1:8000/$1 [P,L]`). Add
+`* * * * * /path/to/studio.sh start >/dev/null 2>&1` to the crontab to bring it back after a crash or reboot.
+Set `SHORTCUT_AUTH_PASSWORD` on any public server: the app has no other login and uses your API keys.
+
 With `GROQ_API_KEY` set, both transcription (hosted Whisper) and highlight picking run on Groq.
 Without it, transcription runs locally with faster-whisper (first run downloads the `small` model,
 ~500 MB); highlight picking needs Groq or one of the other free platforms below.
