@@ -37,6 +37,7 @@ cd frontend && npm ci && npm run build && cd ..
 cd backend && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt && cd ..
 cp backend/.env.example backend/.env   # add keys, plus SHORTCUT_PORT (a free port) and SHORTCUT_AUTH_PASSWORD
 ./studio.sh start                      # also: stop | restart | status | update (git pull + rebuild + restart)
+./studio.sh searxng                    # optional: SearXNG image and video search for Video Maker
 ```
 
 Point the domain at it with a reverse proxy to `http://127.0.0.1:<SHORTCUT_PORT>` (for Apache, in the site's
@@ -146,22 +147,17 @@ sources: **SearXNG images** and **SearXNG video** (Vimeo, Dailymotion, PeerTube,
 whatever else the instance enables). Video results are fetched with yt-dlp, a segment at a time, like YouTube;
 YouTube results join the YouTube source. When either is ticked, Video Maker shows whether the instance answers
 and lets you limit the search to chosen engines (none ticked: the instance's defaults). SearXNG runs as its own
-service (it is AGPL-licensed and is not bundled). It must allow JSON output, which is off by default:
-
-```yaml
-# searxng/settings.yml
-use_default_settings: true
-server:
-  secret_key: "change-me"
-  limiter: false        # a private instance used by this app only
-search:
-  formats: [html, json]
-```
+service (it is AGPL-licensed, so its code is not copied into this one). On a server, one command installs it in
+`backend/data/searxng` (no sudo or Docker; if the server's Python is older than 3.11 it downloads its own):
 
 ```bash
-docker run -d --name searxng -p 8888:8080 -v "$PWD/searxng:/etc/searxng" searxng/searxng
-# backend/.env: SEARXNG_URL=http://127.0.0.1:8888
+./studio.sh searxng
 ```
+
+This sets `SEARXNG_URL` in `backend/.env` and restarts the app. From then on `start` (and so the cron line),
+`stop`, `restart`, `status` and `update` look after SearXNG too. To use an instance you already run instead, set
+`SEARXNG_URL` yourself; it must allow JSON output (`search: formats: [html, json]` in its `settings.yml`) and,
+being private, should have `server: limiter: false`.
 
 ## Video Director
 

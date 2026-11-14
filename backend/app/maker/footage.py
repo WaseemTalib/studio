@@ -166,7 +166,7 @@ def search(provider: str, term: str, orientation: str, short_side: int, page: in
     """Clips for `term`, most relevant first (ties keep the site's order); orientation matches
     rank above others. Unsuitable clips (animation, AI, green screen...) are left out.
     `engines` limits the SearXNG sources to those SearXNG engines (empty: the instance's defaults)."""
-    engines = tuple(engines) if provider in ("searxng", "searxng_video") else ()
+    engines = _engines_for(provider, engines)
     key = (provider, term.strip().lower(), orientation, short_side, page, engines)
     with _cache_lock:
         hit = _cache.get(key)
@@ -280,11 +280,23 @@ def _web_images(term: str) -> list[StockClip]:
     raise FootageError("Live web image search failed" + (f": {'; '.join(errors)}" if errors else ""))
 
 
+def _engines_for(provider: str, engines: tuple[str, ...]) -> tuple[str, ...]:
+    """The chosen SearXNG engines that belong to this source's category (one list of engines serves both
+    SearXNG sources); empty means the instance's default engines for it."""
+    category = {"searxng": "images", "searxng_video": "videos"}.get(provider)
+    if not category or not engines:
+        return ()
+    known = set(searxng_status()["engines"][category])
+    return tuple(sorted(e for e in set(engines) if e in known))
+
+
 def _searxng(term: str, category: str, page: int = 1, engines: tuple[str, ...] = ()) -> list[dict]:
-    params = {"q": term, "format": "json", "categories": category, "language": "en", "safesearch": 1,
-              "pageno": max(1, page)}
+    params = {"q": term, "format": "json", "language": "en", "safesearch": 1, "pageno": max(1, page)}
+    # SearXNG searches the engines of the categories *and* the engines named, so name one or the other.
     if engines:
         params["engines"] = ",".join(engines)
+    else:
+        params["categories"] = category
     data = _get("searxng", f"{SEARXNG_URL}/search", params, {})
     return [item for item in data.get("results") or [] if isinstance(item, dict)]
 
