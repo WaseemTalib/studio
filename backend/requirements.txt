@@ -6,7 +6,7 @@ pydantic==2.11.4
 faster-whisper==1.1.1
 pillow==11.2.1
 opencv-python-headless==4.14.0.94
-yt-dlp[default]>=2026.8.19
+yt-dlp[default,curl-cffi]>=2026.8.19  # curl-cffi: browser impersonation, which Dailymotion and others require
 requests>=2.31
 groq>=1.7
 kokoro-onnx==0.6.1
