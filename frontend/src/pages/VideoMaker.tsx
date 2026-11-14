@@ -8,6 +8,7 @@ import { LimitDialog, LimitLine } from '../components/LimitDialog'
 import { rememberedService, useAIServices } from '../aiServices'
 import AIModelSelect from '../components/AIModelSelect'
 import FootageReview, { type Suggestions } from '../components/FootageReview'
+import SearxngEngines from '../components/SearxngEngines'
 import LookControls from '../components/LookControls'
 import MusicPicker from '../components/MusicPicker'
 import {
@@ -36,6 +37,7 @@ const DEFAULT_SETTINGS_REQUEST: Omit<VideoRequest, 'title' | 'description' | 'ha
   resolution: '1080p',
   footage: 'pexels',
   sources: ['openverse', 'pixabay', 'coverr', 'unsplash'],
+  searxng_engines: [],
   clip_seconds: 5,
   transition: 'fade',
   caption_style: 'simple',
@@ -64,7 +66,7 @@ interface Script {
 const wordCount = (scenes: Scene[]) => scenes.reduce((n, s) => n + s.text.split(/\s+/).filter(Boolean).length, 0)
 const CREDIT_SOURCE: Record<string, string> = {
   pexels: 'Pexels', pixabay: 'Pixabay', wikimedia: 'Wikimedia Commons', commons: 'Wikimedia Commons', jamendo: 'Jamendo',
-  openverse: 'Openverse', web: 'Web image', searxng: 'SearXNG', duckduckgo: 'DuckDuckGo', youtube: 'YouTube',
+  openverse: 'Openverse', web: 'Web image', searxng: 'SearXNG', searxng_video: 'SearXNG video', duckduckgo: 'DuckDuckGo', youtube: 'YouTube',
 }
 const isWorking = (v: Video) => v.status === 'queued' || v.status === 'processing'
 
@@ -154,8 +156,8 @@ export default function VideoMaker() {
     try {
       const plan = await makerApi.planFootage({
         scenes: script.scenes.map((s) => forApi({ ...s, text: s.text.trim() || '…', clips: [] })),
-        sources: settings.sources, aspect: settings.aspect, resolution: settings.resolution,
-        clip_seconds: settings.clip_seconds, speed: settings.voice.settings.speed, cards: settings.cards,
+        sources: settings.sources, searxng_engines: settings.searxng_engines, aspect: settings.aspect,
+        resolution: settings.resolution, clip_seconds: settings.clip_seconds, speed: settings.voice.settings.speed, cards: settings.cards,
         photos: settings.photos, ai_service: source.service, ...(only !== undefined ? { only } : {}),
       })
       setScript((cur) => cur && {
@@ -186,7 +188,7 @@ export default function VideoMaker() {
     if (ai_service) setSrc('service', ai_service)
     setScript({ title, description, hashtags, scenes: scenes.map((sc) => withUid({ ...blankScene(), ...sc, uid: undefined })) })
     const legacy: FootageSource[] = rest.footage === 'none' ? [] : rest.footage === 'both' ? ['pexels', 'pixabay'] : [rest.footage]
-    setSettings({ ...DEFAULT_SETTINGS_REQUEST, ...rest, sources: rest.sources ?? legacy })
+    setSettings({ ...DEFAULT_SETTINGS_REQUEST, ...rest, sources: rest.sources ?? legacy, searxng_engines: rest.searxng_engines ?? [] })
     setSuggestions({})
     const label = SCRIPT_LANGUAGES.find((l) => l.code === language)?.label
     if (label) setSrc('language', label)
@@ -310,6 +312,10 @@ export default function VideoMaker() {
                       )
                     })}
                   </div>
+                  {(settings.sources.includes('searxng') || settings.sources.includes('searxng_video')) && (
+                    <SearxngEngines images={settings.sources.includes('searxng')} videos={settings.sources.includes('searxng_video')}
+                      value={settings.searxng_engines} onChange={(v) => set('searxng_engines', v)} />
+                  )}
                 </div>
                 <div className="row wrap">
                   <div className="field">
@@ -354,7 +360,7 @@ export default function VideoMaker() {
                     Photos of named places <em className="muted">(free-licensed, Wikimedia Commons)</em>
                   </label>
                 </div>
-                <FootageReview scenes={script.scenes} suggestions={suggestions} sources={settings.sources}
+                <FootageReview scenes={script.scenes} suggestions={suggestions} sources={settings.sources} engines={settings.searxng_engines}
                   aspect={settings.aspect} resolution={settings.resolution} busy={finding} onFind={findFootage}
                   onChange={(i, clips) => setScript((cur) => cur && {
                     ...cur, scenes: cur.scenes.map((s, n) => (n === i ? { ...s, clips } : s)),

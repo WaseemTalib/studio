@@ -70,7 +70,7 @@ def _make(vid: str) -> None:
 
     runner.stage(vid, "footage")
     picker = shots.Picker(footage.providers_for(footage_sources(req)), footage.orientation_of(req.aspect), min(size),
-                          req.photos, req.ai_service)
+                          req.photos, req.ai_service, req.searxng_engines)
     chosen = shots.choose(req.scenes, plan, picker)
     pieces, credits = shots.shoot(vid, req.scenes, plan, chosen, size, work, req.highlight_color,
                                   lambda f: runner.stage(vid, "footage", f))

@@ -3,11 +3,14 @@ import type { TTSProvider, VoiceSettings } from './voiceApi'
 
 export type SourceKind = 'prompt' | 'description' | 'script' | 'news'
 export type Footage = 'pexels' | 'pixabay' | 'both' | 'none'
-export type FootageSource = 'openverse' | 'web' | 'youtube' | 'pixabay' | 'pexels' | 'coverr' | 'commons' | 'unsplash'
+export type FootageSource = 'openverse' | 'web' | 'searxng' | 'searxng_video' | 'youtube' | 'pixabay' | 'pexels' | 'coverr' |
+  'commons' | 'unsplash'
 
 export const FOOTAGE_SOURCES: { id: FootageSource; label: string; hint: string; key: string; signup: string }[] = [
   { id: 'openverse', label: 'Openverse', hint: 'live Creative Commons image search', key: '', signup: '' },
   { id: 'web', label: 'Web images', hint: 'live search · review usage rights', key: '', signup: '' },
+  { id: 'searxng', label: 'SearXNG images', hint: 'your metasearch engines · review usage rights', key: 'SEARXNG_URL', signup: 'docs.searxng.org' },
+  { id: 'searxng_video', label: 'SearXNG video', hint: 'Vimeo, Dailymotion, PeerTube… · review usage rights', key: 'SEARXNG_URL', signup: 'docs.searxng.org' },
   { id: 'youtube', label: 'YouTube', hint: 'real video results · review usage rights', key: 'yt-dlp', signup: 'installed with the backend' },
   { id: 'pixabay', label: 'Pixabay', hint: 'stock video', key: 'PIXABAY_API_KEY', signup: 'pixabay.com/api/docs' },
   { id: 'pexels', label: 'Pexels', hint: 'stock video', key: 'PEXELS_API_KEY', signup: 'pexels.com/api' },
@@ -20,7 +23,7 @@ export type MakerStage = 'voice' | 'captions' | 'footage' | 'render'
 /** A stock clip or photo, as found by a footage search. */
 export interface Media {
   key: string
-  provider: 'openverse' | 'web' | 'searxng' | 'duckduckgo' | 'youtube' | 'pexels' | 'pixabay' | 'coverr' |
+  provider: 'openverse' | 'web' | 'searxng' | 'searxng_video' | 'duckduckgo' | 'youtube' | 'pexels' | 'pixabay' | 'coverr' |
     'commons' | 'wikimedia' | 'unsplash' | 'upload'
   id: string
   link: string
@@ -92,6 +95,8 @@ export interface VideoRequest {
   footage: Footage
   /** Where footage comes from; empty means a plain background. */
   sources: FootageSource[]
+  /** SearXNG engines the SearXNG sources search; empty uses the instance's defaults. */
+  searxng_engines: string[]
   clip_seconds: number
   transition: 'cut' | 'fade'
   caption_style: string
@@ -174,6 +179,17 @@ export interface MakerOptions {
   music_sources: { jamendo: boolean; commons: boolean }
 }
 
+/** Whether the SearXNG instance in SEARXNG_URL can be used, and its engines. */
+export interface SearxngStatus {
+  configured: boolean
+  url: string
+  reachable: boolean
+  json: boolean
+  version: string
+  engines: { images: string[]; videos: string[] }
+  error: string
+}
+
 /** The script service hit a usage limit: what it was and what else can write the script. */
 export class DraftLimit extends Error {
   state: LimitState
@@ -191,6 +207,7 @@ const json = (body: unknown, method = 'POST'): RequestInit => ({
 
 export const makerApi = {
   options: () => request<MakerOptions>('/api/maker/options'),
+  searxngStatus: () => request<SearxngStatus>('/api/maker/searxng'),
   draft: async (body: DraftRequest): Promise<Draft> => {
     const res = await fetch('/api/maker/draft', json(body))
     if (res.status === 429) {
@@ -210,10 +227,13 @@ export const makerApi = {
     return res.json()
   },
   planFootage: (body: { scenes: Scene[]; sources: FootageSource[]; aspect: VideoRequest['aspect']; resolution: VideoRequest['resolution'];
-    clip_seconds: number; speed: number; cards: boolean; photos: boolean; ai_service: string | null; only?: number }) =>
+    searxng_engines: string[]; clip_seconds: number; speed: number; cards: boolean; photos: boolean;
+    ai_service: string | null; only?: number }) =>
     request<FootagePlan>('/api/maker/footage', json(body)),
-  searchFootage: (q: string, sources: (FootageSource | 'photos')[], aspect: VideoRequest['aspect'], resolution: VideoRequest['resolution']) =>
-    request<Media[]>(`/api/maker/footage/search?${new URLSearchParams({ q, sources: sources.join(','), aspect, resolution })}`),
+  searchFootage: (q: string, sources: (FootageSource | 'photos')[], aspect: VideoRequest['aspect'], resolution: VideoRequest['resolution'],
+    engines: string[] = []) =>
+    request<Media[]>(`/api/maker/footage/search?${new URLSearchParams({ q, sources: sources.join(','), aspect, resolution,
+      engines: engines.join(',') })}`),
   uploads: () => request<Media[]>('/api/maker/footage/uploads'),
   upload: (file: File) => {
     const form = new FormData()

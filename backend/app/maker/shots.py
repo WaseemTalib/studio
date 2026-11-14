@@ -40,6 +40,10 @@ FADE = 0.3              # fade between scenes
 CARD_SECONDS = 3.2
 PARALLEL_SHOTS = 3      # shots fetched and encoded at once; mostly waiting on the network
 SEARCH_THREADS = 4
+# Sources whose clips are web video pages; yt-dlp fetches only the seconds a shot uses.
+YTDLP_PROVIDERS = {"youtube", "searxng_video"}
+# Sources that may fail without stopping a render; their shots fall back to other sources.
+SOFT_FAILING = {"wikimedia", "openverse", "web", "youtube", "searxng", "searxng_video"}
 CANDIDATES = 24         # suggestions per scene in the footage review
 VET_CLIPS = 16          # matching clips per scene the AI checks against the narration
 VET_SCENES = 6          # scenes per AI request
@@ -138,8 +142,9 @@ class Picker:
     """Finds matching stock media for shots; see the module docstring for the order of preference."""
 
     def __init__(self, providers: list[str], orientation: str, short_side: int, photos: bool,
-                 service: str | None = None):
+                 service: str | None = None, engines: list[str] | None = None):
         self.providers = providers
+        self.engines = tuple(engines or ())  # SearXNG engines; empty: the instance's defaults
         self.service = service  # the AI that checks footage; None uses the default
         self.orientation = orientation
         self.short_side = short_side
@@ -152,12 +157,12 @@ class Picker:
     def search(self, provider: str, term: str, page: int = 1) -> list[StockClip]:
         while True:
             try:
-                return footage.search(provider, term, self.orientation, self.short_side, page)
+                return footage.search(provider, term, self.orientation, self.short_side, page, self.engines)
             except limits.LimitReached as e:
                 if not self._on_limit(provider, e.limit):
                     return []
             except footage.FootageError as e:
-                if provider not in ("wikimedia", "openverse", "web", "youtube"):
+                if provider not in SOFT_FAILING:
                     raise
                 log.warning("%s search failed: %s", provider, e)
                 return []
@@ -192,7 +197,7 @@ class Picker:
         def run(item: tuple[str, str]) -> None:
             with cancel.bound(job) if job else nullcontext():
                 try:
-                    footage.search(item[0], item[1], self.orientation, self.short_side)
+                    footage.search(item[0], item[1], self.orientation, self.short_side, 1, self.engines)
                 except (limits.LimitReached, footage.FootageError):
                     pass  # met again, and handled, when picking
         with ThreadPoolExecutor(max_workers=SEARCH_THREADS) as pool:
@@ -329,7 +334,8 @@ def plan_footage(req: FootagePlanRequest, gap: float, tail: float) -> dict:
     from ..pipeline.render import output_size
     w, h = output_size(req.aspect, req.resolution)
     providers = footage.providers_for(footage_sources(req))
-    picker = Picker(providers, footage.orientation_of(req.aspect), min(w, h), req.photos, req.ai_service)
+    picker = Picker(providers, footage.orientation_of(req.aspect), min(w, h), req.photos, req.ai_service,
+                    req.searxng_engines)
     scenes = [s.model_copy(update={"clips": []}) for s in req.scenes]  # suggest afresh
     shots = plan(scenes, estimated_spans(scenes, req.speed, gap, tail), req.clip_seconds, req.cards, False)
     wanted = range(len(scenes)) if req.only is None else [req.only]
@@ -352,12 +358,13 @@ def plan_footage(req: FootagePlanRequest, gap: float, tail: float) -> dict:
     return {"scenes": out}
 
 
-def search_media(sources: list[str], term: str, aspect: str, resolution: str) -> list[dict]:
+def search_media(sources: list[str], term: str, aspect: str, resolution: str,
+                 engines: list[str] | None = None) -> list[dict]:
     """A search typed in the footage review; "photos" are Wikimedia Commons photos."""
     from ..pipeline.render import output_size
     w, h = output_size(aspect, resolution)
     providers = (["wikimedia"] if "photos" in sources else []) + footage.providers_for([s for s in sources if s != "photos"])
-    picker = Picker(providers, footage.orientation_of(aspect), min(w, h), True)
+    picker = Picker(providers, footage.orientation_of(aspect), min(w, h), True, engines=engines)
     groups: list[list[StockClip]] = []
     with ThreadPoolExecutor(max_workers=min(4, len(providers) or 1)) as pool:
         found = pool.map(lambda p: picker.search(p, term), providers)
@@ -433,12 +440,12 @@ def shoot(vid: str, scenes: list[Scene], shots: list[Shot], chosen: list[StockCl
                     f.used_clip = True
                 except (media.MediaError, uploads.UploadError) as e:
                     log.warning("shot %s: your clip failed (%s); plain background", f.out.name, str(e).splitlines()[-1])
-            elif f.clip is not None and f.clip.provider == "youtube":
+            elif f.clip is not None and f.clip.provider in YTDLP_PROVIDERS:
                 try:
                     _encode_video(f, ["-i", str(downloads.get(f.clip))], size, partial)
                     f.used_clip = True
                 except (media.MediaError, footage.FootageError) as e:
-                    log.warning("shot %s: YouTube segment failed (%s); plain background", f.out.name,
+                    log.warning("shot %s: video segment failed (%s); plain background", f.out.name,
                                 str(e).splitlines()[-1])
             elif f.clip is not None:
                 link = (footage.coverr_link(f.clip.id) or f.clip.link) if f.clip.provider == "coverr" else f.clip.link
@@ -543,7 +550,7 @@ class _Downloads:
             if path.exists():
                 return path
             self.folder.mkdir(parents=True, exist_ok=True)
-            if clip.provider == "youtube":
+            if clip.provider in YTDLP_PROVIDERS:
                 return self._youtube(clip, path, safe)
             part = path.with_suffix(".part")
             try:
@@ -580,10 +587,10 @@ class _Downloads:
                        "-f", "bv*[height<=1080][width<=1920]/b[height<=1080][width<=1920]",
                        "--merge-output-format", "mp4", "--max-filesize", "50M", "-o", str(template), clip.link])
         except media.MediaError as e:
-            raise footage.FootageError("YouTube segment download failed") from e
+            raise footage.FootageError("Video segment download failed") from e
         matches = sorted(self.folder.glob(f"{safe}.yt.*"))
         if not matches:
-            raise footage.FootageError("YouTube segment download produced no file")
+            raise footage.FootageError("Video segment download produced no file")
         matches[0].replace(path)
         return path
 

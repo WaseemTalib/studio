@@ -30,7 +30,7 @@ SERVICE_LABELS = {
     "groq": "Groq", "claude": "Claude (AgentRouter)", "deepseek": "DeepSeek (AgentRouter)",
     "deepseek-api": "DeepSeek (personal key)", "gemini": "Google Gemini", "openrouter": "OpenRouter", "sambanova": "SambaNova",
     "local": "Whisper (this computer)", "pexels": "Pexels", "pixabay": "Pixabay",
-    "wikimedia": "Wikimedia Commons", "openverse": "Openverse", "searxng": "SearXNG",
+    "wikimedia": "Wikimedia Commons", "openverse": "Openverse", "searxng": "SearXNG", "searxng_video": "SearXNG video",
     "duckduckgo": "DuckDuckGo", "youtube": "YouTube", "jamendo": "Jamendo",
 }
 

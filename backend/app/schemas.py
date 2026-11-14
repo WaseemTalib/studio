@@ -238,7 +238,10 @@ class AddLibraryVoice(BaseModel):
 
 SourceKind = Literal["prompt", "description", "script", "news"]
 Footage = Literal["pexels", "pixabay", "both", "none"]  # before several sources could be chosen
-FootageSource = Literal["openverse", "web", "youtube", "pixabay", "pexels", "coverr", "commons", "unsplash"]
+FootageSource = Literal["openverse", "web", "searxng", "searxng_video", "youtube", "pixabay", "pexels", "coverr",
+                        "commons", "unsplash"]
+# A SearXNG engine name, as its /config lists it (e.g. "vimeo", "wikicommons.images").
+SearxngEngine = Annotated[str, StringConstraints(pattern=r"^[a-z0-9 _.-]{1,60}$")]
 
 
 SEARCH_TERMS_HELP = ("4-6 English stock-footage searches of 2-3 words, in the order the narration mentions "
@@ -302,7 +305,7 @@ class StockMedia(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    provider: Literal["openverse", "web", "searxng", "duckduckgo", "youtube", "pexels", "pixabay", "coverr",
+    provider: Literal["openverse", "web", "searxng", "searxng_video", "duckduckgo", "youtube", "pexels", "pixabay", "coverr",
                       "commons", "wikimedia", "unsplash", "upload"]
     id: str = Field(max_length=300)
     link: str = Field(max_length=2000)
@@ -357,6 +360,7 @@ class VideoRequest(BaseModel):
     resolution: Literal["720p", "1080p"] = "1080p"
     footage: Footage = "pexels"
     sources: list[FootageSource] | None = None  # where footage comes from; None: from `footage`; []: plain
+    searxng_engines: list[SearxngEngine] | None = Field(default=None, max_length=30)  # None/[]: instance defaults
     clip_seconds: float = Field(default=5, ge=2, le=15)  # longest single stock shot
     transition: Literal["cut", "fade"] = "fade"
     caption_style: str = "simple"
@@ -387,6 +391,7 @@ class FootagePlanRequest(BaseModel):
     scenes: list[Scene] = Field(min_length=1, max_length=200)
     footage: Footage = "pixabay"
     sources: list[FootageSource] | None = None
+    searxng_engines: list[SearxngEngine] | None = Field(default=None, max_length=30)
     aspect: Aspect = "16:9"
     resolution: Literal["720p", "1080p"] = "1080p"
     clip_seconds: float = Field(default=5, ge=2, le=15)

@@ -5,7 +5,7 @@ import { FOOTAGE_SOURCES, makerApi, type FootageSource, type Media, type Scene, 
 export type Suggestions = Record<string, { shots: number; candidates: Media[] }>
 
 const PROVIDER: Record<Media['provider'], string> = {
-  openverse: 'Openverse', web: 'Web', searxng: 'SearXNG', duckduckgo: 'DuckDuckGo', youtube: 'YouTube',
+  openverse: 'Openverse', web: 'Web', searxng: 'SearXNG', searxng_video: 'SearXNG video', duckduckgo: 'DuckDuckGo', youtube: 'YouTube',
   pexels: 'Pexels', pixabay: 'Pixabay', coverr: 'Coverr', commons: 'Commons', wikimedia: 'Wikimedia',
   unsplash: 'Unsplash', upload: 'Yours',
 }
@@ -13,10 +13,12 @@ const PROVIDER: Record<Media['provider'], string> = {
 type PickerSource = 'all' | 'research' | FootageSource | 'photos' | 'uploads'
 
 /** The footage each scene will use: thumbnails to check, swap, add or remove before rendering. */
-export default function FootageReview({ scenes, suggestions, sources, aspect, resolution, busy, onFind, onChange }: {
+export default function FootageReview({ scenes, suggestions, sources, engines, aspect, resolution, busy, onFind, onChange }: {
   scenes: Scene[]
   suggestions: Suggestions
   sources: FootageSource[]
+  /** SearXNG engines; empty uses the instance's defaults. */
+  engines: string[]
   aspect: VideoRequest['aspect']
   resolution: VideoRequest['resolution']
   busy: number | 'all' | null
@@ -73,7 +75,7 @@ export default function FootageReview({ scenes, suggestions, sources, aspect, re
       {picking && (
         <MediaPicker scene={scenes[picking.scene]} index={picking.scene}
           candidates={suggestions[scenes[picking.scene].uid!]?.candidates ?? []}
-          sources={sources} aspect={aspect} resolution={resolution} onClose={() => setPicking(null)}
+          sources={sources} engines={engines} aspect={aspect} resolution={resolution} onClose={() => setPicking(null)}
           onPick={(clip) => {
             const clips = [...scenes[picking.scene].clips]
             if (picking.slot === null) clips.push(clip)
@@ -102,11 +104,12 @@ function Thumb({ clip, onClick, onRemove }: { clip: Media; onClick?: () => void;
   )
 }
 
-function MediaPicker({ scene, index, candidates, sources, aspect, resolution, onPick, onClose }: {
+function MediaPicker({ scene, index, candidates, sources, engines, aspect, resolution, onPick, onClose }: {
   scene: Scene
   index: number
   candidates: Media[]
   sources: FootageSource[]
+  engines: string[]
   aspect: VideoRequest['aspect']
   resolution: VideoRequest['resolution']
   onPick: (m: Media) => void
@@ -127,7 +130,7 @@ function MediaPicker({ scene, index, candidates, sources, aspect, resolution, on
     try {
       const wanted: (FootageSource | 'photos')[] = source === 'all' ? sources
         : source === 'research' ? ['openverse', 'web', 'youtube'] : [source as FootageSource | 'photos']
-      setResults(await makerApi.searchFootage(query.trim(), wanted, aspect, resolution))
+      setResults(await makerApi.searchFootage(query.trim(), wanted, aspect, resolution, engines))
     } catch (err) {
       setError((err as Error).message)
     } finally {

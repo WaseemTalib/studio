@@ -115,7 +115,8 @@ stays on Groq Whisper (or local Whisper), since Claude and DeepSeek do not trans
    If the service hits a usage limit, you choose to wait (it retries when the limit frees up) or switch.
 3. **Voice**: Kokoro on this computer (free) or ElevenLabs. Narration is kept per scene, so a retry or remake does
    not record it again.
-4. **Footage**: use live Openverse research, web image search through SearXNG or DuckDuckGo, YouTube search,
+4. **Footage**: use live Openverse research, web image search through SearXNG or DuckDuckGo, SearXNG image and
+   video metasearch with engines you choose, YouTube search,
    Pixabay, Pexels, Coverr (free keys), Wikimedia Commons real-world and news video (no key; graphic titles are
    filtered out), and Unsplash photos (free key, shown with a slow zoom); ffmpeg reads
    only the seconds it needs. The footage review can also use **your own clips and images** (My uploads). A clip is used
@@ -137,6 +138,30 @@ stays on Groq Whisper (or local Whisper), since Claude and DeepSeek do not trans
    whole-file downloads: set `SHORTCUT_CONTACT` (your email or website).
 
 Videos are saved in `backend/data/videos/`, uploaded music in `backend/data/videos/music/`.
+
+### SearXNG metasearch (optional)
+
+Point `SEARXNG_URL` at your own [SearXNG](https://github.com/searxng/searxng) instance to unlock two footage
+sources: **SearXNG images** and **SearXNG video** (Vimeo, Dailymotion, PeerTube, YouTube, Bing/Google Videos and
+whatever else the instance enables). Video results are fetched with yt-dlp, a segment at a time, like YouTube;
+YouTube results join the YouTube source. When either is ticked, Video Maker shows whether the instance answers
+and lets you limit the search to chosen engines (none ticked: the instance's defaults). SearXNG runs as its own
+service (it is AGPL-licensed and is not bundled). It must allow JSON output, which is off by default:
+
+```yaml
+# searxng/settings.yml
+use_default_settings: true
+server:
+  secret_key: "change-me"
+  limiter: false        # a private instance used by this app only
+search:
+  formats: [html, json]
+```
+
+```bash
+docker run -d --name searxng -p 8888:8080 -v "$PWD/searxng:/etc/searxng" searxng/searxng
+# backend/.env: SEARXNG_URL=http://127.0.0.1:8888
+```
 
 ## Video Director
 
@@ -197,7 +222,7 @@ export them in your shell, which takes precedence. Restart the backend after cha
 | `PIXABAY_API_KEY` | unset | Pixabay stock footage in Video Maker (free at pixabay.com/api/docs) |
 | `COVERR_API_KEY` | unset | Coverr stock video in Video Maker (email team@coverr.co for a key) |
 | `UNSPLASH_ACCESS_KEY` | unset | Unsplash photos in Video Maker (unsplash.com/developers) |
-| `SEARXNG_URL` | unset | Optional private SearXNG endpoint for live web-image research; DuckDuckGo is the fallback |
+| `SEARXNG_URL` | unset | Your SearXNG instance: the SearXNG images and video sources, and the Web source's first choice (DuckDuckGo is the fallback); needs JSON output on (see SearXNG metasearch) |
 | `JAMENDO_CLIENT_ID` | unset | Jamendo music search in Video Maker (free at devportal.jamendo.com) |
 | `SHORTCUT_CONTACT` | unset | Your email or website, sent to Wikimedia Commons (and stock sites) as their API policy asks |
 | `SHORTCUT_KOKORO_MODEL` | `kokoro-v1.0.onnx` | Local voice model file (`kokoro-v1.0.int8.onnx` is smaller but slower on Apple Silicon) |

@@ -1,5 +1,6 @@
 """Searchable media for the video maker: live web research through Openverse, optional SearXNG or
-DuckDuckGo, and YouTube; stock video from Pixabay, Pexels and Coverr; real-world video and photos
+DuckDuckGo, and YouTube; images and video through your own SearXNG metasearch instance (any of its
+engines, called through its JSON API); stock video from Pixabay, Pexels and Coverr; real-world video and photos
 from Wikimedia Commons; and photos from Unsplash.
 
 Every result is scored against the search words using the site's own description of it
@@ -30,10 +31,11 @@ from ..pipeline import limits, media
 
 PER_PAGE = {"pexels": 40, "pixabay": 50, "coverr": 40, "unsplash": 30}
 # Searchable sources, in the order their results are preferred when equally relevant.
-SOURCES = ("openverse", "web", "youtube", "commons", "pixabay", "pexels", "coverr", "unsplash")
-SIGNUP = {"pexels": "pexels.com/api", "pixabay": "pixabay.com/api/docs", "coverr": "email team@coverr.co",
+SOURCES = ("openverse", "web", "searxng", "searxng_video", "youtube", "commons", "pixabay", "pexels", "coverr",
+           "unsplash")
+SIGNUP = {"searxng": "docs.searxng.org", "searxng_video": "docs.searxng.org", "pexels": "pexels.com/api", "pixabay": "pixabay.com/api/docs", "coverr": "email team@coverr.co",
           "unsplash": "unsplash.com/developers"}
-KEY_NAME = {"pexels": "PEXELS_API_KEY", "pixabay": "PIXABAY_API_KEY", "coverr": "COVERR_API_KEY",
+KEY_NAME = {"searxng": "SEARXNG_URL", "searxng_video": "SEARXNG_URL", "pexels": "PEXELS_API_KEY", "pixabay": "PIXABAY_API_KEY", "coverr": "COVERR_API_KEY",
             "unsplash": "UNSPLASH_ACCESS_KEY"}
 # Commons holds real news footage, some of it graphic; such titles are never offered.
 GRAPHIC = re.compile(r"\b(kill(ed|ing|s)?|murder|massacre|terroris[tm]s?|shoot(ing|s)?|shot dead|gunfire|fire into|"
@@ -92,7 +94,7 @@ class StockClip:
 
 
 def available() -> dict[str, bool]:
-    return {"openverse": True, "web": True,
+    return {"openverse": True, "web": True, "searxng": bool(SEARXNG_URL), "searxng_video": bool(SEARXNG_URL),
             "youtube": bool(shutil.which(YT_DLP) or os.path.isfile(YT_DLP)),
             "pixabay": bool(PIXABAY_API_KEY), "pexels": bool(PEXELS_API_KEY), "coverr": bool(COVERR_API_KEY),
             "commons": True, "unsplash": bool(UNSPLASH_ACCESS_KEY)}
@@ -159,10 +161,13 @@ _cache: dict[tuple, tuple[float, list[StockClip]]] = {}
 _cache_lock = threading.Lock()
 
 
-def search(provider: str, term: str, orientation: str, short_side: int, page: int = 1) -> list[StockClip]:
+def search(provider: str, term: str, orientation: str, short_side: int, page: int = 1,
+           engines: tuple[str, ...] = ()) -> list[StockClip]:
     """Clips for `term`, most relevant first (ties keep the site's order); orientation matches
-    rank above others. Unsuitable clips (animation, AI, green screen...) are left out."""
-    key = (provider, term.strip().lower(), orientation, short_side, page)
+    rank above others. Unsuitable clips (animation, AI, green screen...) are left out.
+    `engines` limits the SearXNG sources to those SearXNG engines (empty: the instance's defaults)."""
+    engines = tuple(engines) if provider in ("searxng", "searxng_video") else ()
+    key = (provider, term.strip().lower(), orientation, short_side, page, engines)
     with _cache_lock:
         hit = _cache.get(key)
         if hit and time.time() - hit[0] < CACHE_SECONDS:
@@ -183,6 +188,10 @@ def search(provider: str, term: str, orientation: str, short_side: int, page: in
         found = _openverse(term, page)
     elif provider == "web":
         found = _web_images(term)
+    elif provider == "searxng":
+        found = _searxng_images(term, page, engines)
+    elif provider == "searxng_video":
+        found = _searxng_videos(term, page, engines)
     elif provider == "youtube":
         found = _youtube(term)
     else:
@@ -206,13 +215,18 @@ def _get(provider: str, url: str, params: dict, headers: dict) -> dict:
         raise FootageError(f"Could not reach {limits.SERVICE_LABELS[provider]}") from e
     if r.status_code == 429:
         raise limits.LimitReached(_limit(provider, r))
+    if r.status_code == 403 and provider == "searxng":
+        raise FootageError(SEARXNG_NO_JSON)
     if r.status_code in (400, 401, 403) and provider == "pixabay" and "key" in r.text.lower():
         raise FootageError("Pixabay API key is invalid (PIXABAY_API_KEY)")
-    if r.status_code in (401, 403) and provider in KEY_NAME:
+    if r.status_code in (401, 403) and provider in KEY_NAME and provider != "searxng":
         raise FootageError(f"{limits.SERVICE_LABELS[provider]} API key is invalid ({KEY_NAME[provider]})")
     if r.status_code >= 400:
         raise FootageError(f"{limits.SERVICE_LABELS[provider]} error {r.status_code}: {r.text[:200]}")
-    return r.json()
+    try:
+        return r.json()
+    except ValueError as e:
+        raise FootageError(f"{limits.SERVICE_LABELS[provider]} did not answer with JSON") from e
 
 
 def _http_url(url: str) -> bool:
@@ -266,24 +280,138 @@ def _web_images(term: str) -> list[StockClip]:
     raise FootageError("Live web image search failed" + (f": {'; '.join(errors)}" if errors else ""))
 
 
-def _searxng_images(term: str) -> list[StockClip]:
-    data = _get("searxng", f"{SEARXNG_URL}/search",
-                {"q": term, "format": "json", "categories": "images", "language": "en", "safesearch": 1}, {})
+def _searxng(term: str, category: str, page: int = 1, engines: tuple[str, ...] = ()) -> list[dict]:
+    params = {"q": term, "format": "json", "categories": category, "language": "en", "safesearch": 1,
+              "pageno": max(1, page)}
+    if engines:
+        params["engines"] = ",".join(engines)
+    data = _get("searxng", f"{SEARXNG_URL}/search", params, {})
+    return [item for item in data.get("results") or [] if isinstance(item, dict)]
+
+
+def _searxng_images(term: str, page: int = 1, engines: tuple[str, ...] = ()) -> list[StockClip]:
     out = []
-    for item in data.get("results") or []:
+    for item in _searxng(term, "images", page, engines):
         raw = str(item.get("img_src") or "")
         link = urljoin(SEARXNG_URL + "/", raw)
         page_url = urljoin(SEARXNG_URL + "/", str(item.get("url") or link))
-        if not _http_url(link) or not _http_url(page_url):
+        if not raw or not _http_url(link) or not _http_url(page_url):
             continue
         size = re.search(r"(\d{2,5})\s*[x×]\s*(\d{2,5})", str(item.get("resolution") or item.get("content") or ""))
         width, height = (int(size.group(1)), int(size.group(2))) if size else (1280, 720)
         title = str(item.get("title") or term)
         thumb = urljoin(SEARXNG_URL + "/", str(item.get("thumbnail_src") or item.get("thumbnail") or link))
+        engine = str(item.get("engine") or "")
         out.append(StockClip("searxng", _media_id(link), link, width, height, 0.0, page_url,
-                             urlparse(page_url).netloc, thumb=thumb, text=title, kind="photo",
+                             str(item.get("author") or "") or urlparse(page_url).netloc, thumb=thumb,
+                             text=" ".join(x for x in (title, str(item.get("content") or "")[:200]) if x),
+                             kind="photo", license=_searxng_license(engine)))
+    return out
+
+
+YOUTUBE_ID = re.compile(r"(?:youtube\.com/(?:watch\?(?:.*&)?v=|shorts/|embed/)|youtu\.be/)([A-Za-z0-9_-]{11})")
+# Engines whose images are free to use; everything else is the open web.
+FREE_ENGINES = {"openverse": "Creative Commons", "wikicommons.images": "Wikimedia Commons (free licence)",
+                "unsplash": "Unsplash License", "pexels": "Pexels License", "pixabay": "Pixabay License"}
+
+
+def _searxng_license(engine: str) -> str:
+    return FREE_ENGINES.get(engine.lower(), "Rights unknown — verify before publishing")
+
+
+def _length_seconds(value) -> float:
+    """SearXNG gives a video's length as seconds, "m:ss", "h:mm:ss" or not at all."""
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").strip()
+    if re.fullmatch(r"\d+(\.\d+)?", text):
+        return float(text)
+    if re.fullmatch(r"\d+(:\d{1,2}){1,2}", text):
+        seconds = 0.0
+        for part in text.split(":"):
+            seconds = seconds * 60 + int(part)
+        return seconds
+    return 0.0
+
+
+def _searxng_videos(term: str, page: int = 1, engines: tuple[str, ...] = ()) -> list[StockClip]:
+    """Video pages from SearXNG's video engines (YouTube, Vimeo, Dailymotion, PeerTube...); the
+    seconds a shot uses are fetched with yt-dlp. YouTube results join the YouTube source."""
+    out = []
+    for item in _searxng(term, "videos", page, engines):
+        page_url = str(item.get("url") or "")
+        if not _http_url(page_url):
+            continue
+        duration = _length_seconds(item.get("length"))
+        if duration and (duration < 2 or duration > 40 * 60):
+            continue
+        title = str(item.get("title") or term)
+        author = str(item.get("author") or "") or urlparse(page_url).netloc
+        thumb = str(item.get("thumbnail") or item.get("thumbnail_src") or "")
+        thumb = urljoin(SEARXNG_URL + "/", thumb) if thumb else ""
+        text = " ".join(x for x in (title, str(item.get("content") or "")[:200]) if x)
+        youtube = YOUTUBE_ID.search(page_url)
+        if youtube:
+            video_id = youtube.group(1)
+            out.append(StockClip("youtube", video_id, f"https://www.youtube.com/watch?v={video_id}", 1280, 720,
+                                 min(duration or 30.0, 30.0), f"https://www.youtube.com/watch?v={video_id}", author,
+                                 thumb=thumb or f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg", text=text,
+                                 license="Rights unknown — verify before publishing"))
+            continue
+        out.append(StockClip("searxng_video", _media_id(page_url), page_url, 1280, 720, min(duration or 30.0, 30.0),
+                             page_url, author, thumb=thumb, text=text,
                              license="Rights unknown — verify before publishing"))
     return out
+
+
+SEARXNG_NO_JSON = "SearXNG refused JSON output: add json under search.formats in its settings.yml"
+_status: tuple[float, dict] | None = None
+
+
+def searxng_status() -> dict:
+    """Whether the SearXNG instance can be used, and its image and video engines. Cached for a minute."""
+    global _status
+    if _status and time.time() - _status[0] < 60:
+        return _status[1]
+    status = {"configured": bool(SEARXNG_URL), "url": SEARXNG_URL, "reachable": False, "json": False,
+              "version": "", "engines": {"images": [], "videos": []}, "error": ""}
+    if not SEARXNG_URL:
+        status["error"] = "Set SEARXNG_URL in backend/.env"
+    elif not _http_url(SEARXNG_URL):
+        status["error"] = "SEARXNG_URL is not an http(s) address"
+    else:
+        try:
+            config = requests.get(f"{SEARXNG_URL}/config", headers={"User-Agent": USER_AGENT}, timeout=10)
+            status["reachable"] = True
+            if config.ok:
+                data = config.json()
+                status["version"] = str(data.get("version") or "")
+                for engine in data.get("engines") or []:
+                    if not isinstance(engine, dict) or not engine.get("enabled", True):
+                        continue
+                    categories = engine.get("categories") or []
+                    for category in ("images", "videos"):
+                        if category in categories:
+                            status["engines"][category].append(str(engine.get("name") or ""))
+                for category in ("images", "videos"):
+                    status["engines"][category] = sorted(set(filter(None, status["engines"][category])))
+            probe = requests.get(f"{SEARXNG_URL}/search", params={"q": "test", "format": "json"},
+                                 headers={"User-Agent": USER_AGENT}, timeout=15)
+            if probe.status_code == 403:
+                status["error"] = SEARXNG_NO_JSON
+            elif probe.status_code == 429:
+                status["error"] = "SearXNG's limiter is blocking this app: turn server.limiter off for a private instance"
+            elif not probe.ok:
+                status["error"] = f"SearXNG error {probe.status_code}"
+            else:
+                probe.json()
+                status["json"] = True
+        except requests.RequestException:
+            status["error"] = f"Could not reach SearXNG at {SEARXNG_URL}"
+        except ValueError:
+            status["error"] = "SearXNG did not answer with JSON"
+    _status = (time.time(), status)
+    return status
 
 
 def _duckduckgo_images(term: str) -> list[StockClip]:

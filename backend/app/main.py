@@ -498,14 +498,24 @@ def maker_footage(body: FootagePlanRequest) -> dict:
 @app.get("/api/maker/footage/search")
 def maker_footage_search(
     q: str = Query(min_length=1, max_length=100),
-    sources: str = Query("pixabay", max_length=100),  # comma-separated; "photos" is Wikimedia Commons photos
+    sources: str = Query("pixabay", max_length=200),  # comma-separated; "photos" is Wikimedia Commons photos
     aspect: Literal["9:16", "1:1", "16:9"] = "16:9",
     resolution: Literal["720p", "1080p"] = "1080p",
+    engines: str = Query("", max_length=1000),  # comma-separated SearXNG engines; empty: the instance's defaults
 ) -> list[dict]:
     wanted = [s for s in sources.split(",") if s]
     if not wanted or any(s not in (*footage.SOURCES, "photos") for s in wanted):
         raise HTTPException(422, f"sources must be among {', '.join((*footage.SOURCES, 'photos'))}")
-    return _footage_call(shots.search_media, wanted, q.strip(), aspect, resolution)
+    chosen = [e.strip() for e in engines.split(",") if e.strip()]
+    if len(chosen) > 30 or any(not re.fullmatch(r"[a-z0-9 _.-]{1,60}", e) for e in chosen):
+        raise HTTPException(422, "engines must be SearXNG engine names, separated by commas")
+    return _footage_call(shots.search_media, wanted, q.strip(), aspect, resolution, chosen)
+
+
+@app.get("/api/maker/searxng")
+def maker_searxng() -> dict:
+    """Whether the SearXNG instance in SEARXNG_URL answers with JSON, and its image and video engines."""
+    return footage.searxng_status()
 
 
 @app.get("/api/maker/footage/uploads")
