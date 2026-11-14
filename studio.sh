@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run Shortcut Studio in the background on a server (Linux or macOS).
-#   ./studio.sh start | stop | restart | status | update | searxng
+#   ./studio.sh start | stop | restart | status | update | searxng | ffmpeg
 # Host, port and keys come from backend/.env. `start` does nothing if it is already running,
 # so it is safe to call from cron to bring the app back after a crash or reboot.
 # `searxng` installs (or updates) a private SearXNG search engine for Video Maker in backend/data/searxng,
@@ -42,12 +42,55 @@ stop() {
   searx_stop
 }
 
+# ffmpeg and ffprobe: on PATH, set in backend/.env, or a standalone (static) build downloaded into
+# backend/data/bin on Linux servers that have none (no sudo needed); the app looks there too.
+# Whether a tool is usable: the file named in backend/.env ($2), one on PATH, or one in backend/data/bin.
+have_tool() {
+  local setting
+  setting="$(sed -n "s/^$2=//p" "$ENV_FILE" 2>/dev/null | tail -1 | tr -d "\"'")"
+  [[ -n "$setting" && -x "$setting" ]] && return 0
+  command -v "$1" >/dev/null && return 0
+  [[ -x "$BACKEND/data/bin/$1" ]]
+}
+
+ensure_ffmpeg() {
+  local bin="$BACKEND/data/bin"
+  if have_tool ffmpeg SHORTCUT_FFMPEG && have_tool ffprobe SHORTCUT_FFPROBE; then return 0; fi
+  if [[ "$(uname -s)" != Linux ]]; then echo "ffmpeg not found: install it (macOS: brew install ffmpeg)."; return 0; fi
+  local arch; case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;;
+    *) echo "ffmpeg not found and no standalone build for $(uname -m); install ffmpeg."; return 0 ;; esac
+  echo "ffmpeg not found; downloading a standalone build into $bin..."
+  mkdir -p "$bin"
+  local archive="$bin/ffmpeg-static.tar.xz" url="https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-$arch-static.tar.xz"
+  if ! { if command -v curl >/dev/null; then curl -fsSL --retry 2 -o "$archive" "$url"; else wget -qO "$archive" "$url"; fi; }; then
+    rm -f "$archive"; echo "Downloading ffmpeg failed; install it or set SHORTCUT_FFMPEG and SHORTCUT_FFPROBE."; return 0
+  fi
+  # Python's tarfile reads .xz even where tar has no xz support.
+  "$BACKEND/.venv/bin/python" - "$archive" "$bin" <<'PY'
+import os, sys, tarfile
+archive, bin_dir = sys.argv[1], sys.argv[2]
+with tarfile.open(archive) as tar:
+    for member in tar.getmembers():
+        name = os.path.basename(member.name)
+        if member.isfile() and name in ("ffmpeg", "ffprobe"):
+            with tar.extractfile(member) as src, open(os.path.join(bin_dir, name), "wb") as out:
+                out.write(src.read())
+            os.chmod(os.path.join(bin_dir, name), 0o755)
+PY
+  rm -f "$archive"
+  echo "Installed $("$bin/ffmpeg" -hide_banner -version | head -1)."
+  if grep -q '^SHORTCUT_FF' "$ENV_FILE" 2>/dev/null; then
+    echo "Note: SHORTCUT_FFMPEG/SHORTCUT_FFPROBE in backend/.env point to missing files and are ignored; you can delete them."
+  fi
+}
+
 update() {
   cd "$ROOT"
   git pull --ff-only
   "$BACKEND/.venv/bin/pip" install -q -r "$BACKEND/requirements.txt"
   if command -v npm >/dev/null; then (cd frontend && npm ci --no-audit --no-fund && npm run build)
   else echo "npm not found: build the frontend elsewhere and upload frontend/dist."; fi
+  ensure_ffmpeg
   if searx_installed; then searx_install; fi
   stop; start
 }
@@ -181,7 +224,8 @@ case "${1:-}" in
   status) status ;;
   update) update ;;
   searxng) searxng ;;
-  *) echo "Usage: $0 start|stop|restart|status|update|searxng"; exit 1 ;;
+  ffmpeg) ensure_ffmpeg; if running; then stop >/dev/null; start; fi ;;
+  *) echo "Usage: $0 start|stop|restart|status|update|searxng|ffmpeg"; exit 1 ;;
 esac
 exit
 }

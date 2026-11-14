@@ -225,7 +225,7 @@ export them in your shell, which takes precedence. Restart the backend after cha
 | `SHORTCUT_WHISPER_MODEL` | `small` | Local model: `tiny`, `base`, `small`, `medium`, `large-v3` |
 | `SHORTCUT_WHISPER_DEVICE` | `auto` | `cpu`, `cuda`, or `auto` |
 | `SHORTCUT_WHISPER_COMPUTE` | `int8` | faster-whisper compute type |
-| `SHORTCUT_FFMPEG` / `SHORTCUT_FFPROBE` | on `PATH` | Tool paths |
+| `SHORTCUT_FFMPEG` / `SHORTCUT_FFPROBE` | on `PATH` | Tool paths; when missing, `./studio.sh update` downloads a standalone Linux build into `backend/data/bin`, which the app also checks |
 | `SHORTCUT_YT_DLP` | the venv's `yt-dlp` | Downloader; upgrade with `.venv/bin/pip install -U "yt-dlp[default]"` if YouTube returns 403 |
 
 The live research and candidate-search workflow is adapted from the MIT-licensed

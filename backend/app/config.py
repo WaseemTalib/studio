@@ -95,8 +95,21 @@ CONTACT = os.environ.get("SHORTCUT_CONTACT", "").strip()
 VIDEOS_DIR = DATA_DIR / "videos"
 MUSIC_DIR = VIDEOS_DIR / "music"  # served with the videos
 
-FFMPEG = os.environ.get("SHORTCUT_FFMPEG", "ffmpeg")
-FFPROBE = os.environ.get("SHORTCUT_FFPROBE", "ffprobe")
+
+
+def _tool(name: str, setting: str) -> str:
+    """A command-line tool: the path in `setting` if that file exists, else the one on PATH, else the
+    standalone copy `./studio.sh update` downloads into DATA_DIR/bin on servers that have none."""
+    import shutil
+    chosen = os.environ.get(setting, "").strip()
+    for candidate in (chosen, name, str(DATA_DIR / "bin" / name)):
+        if candidate and shutil.which(candidate):
+            return shutil.which(candidate)
+    return chosen or name  # missing: the error names what was looked for
+
+
+FFMPEG = _tool("ffmpeg", "SHORTCUT_FFMPEG")
+FFPROBE = _tool("ffprobe", "SHORTCUT_FFPROBE")
 # Prefer the yt-dlp installed with the backend (kept current via requirements) over an
 # older system copy; YouTube changes often break outdated versions with HTTP 403.
 _BUNDLED_YT_DLP = Path(sys.executable).with_name("yt-dlp")
