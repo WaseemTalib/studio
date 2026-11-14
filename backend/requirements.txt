@@ -10,3 +10,6 @@ yt-dlp[default]>=2026.8.19
 requests>=2.31
 groq>=1.7
 kokoro-onnx==0.6.1
+# Linux servers with glibc older than 2.29 (e.g. RHEL/CentOS 8) cannot load kokoro-onnx's own espeak-ng;
+# this package carries one built for glibc 2.28, used automatically when needed (see app/tts/local.py).
+piper-phonemize==1.1.0; sys_platform == "linux" and (platform_machine == "x86_64" or platform_machine == "aarch64") and python_version < "3.12"

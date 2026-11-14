@@ -3,6 +3,10 @@
 The model and voice files are downloaded on first use into MODELS_DIR/kokoro.
 """
 
+import ctypes
+import importlib.util
+import logging
+import os
 import tempfile
 import threading
 import wave
@@ -14,6 +18,8 @@ import requests
 from ..config import FFMPEG, KOKORO_MODEL, MODELS_DIR
 from ..pipeline.media import run
 from .common import TTSError
+
+log = logging.getLogger(__name__)
 
 RELEASE = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0"
 VOICES_FILE = "voices-v1.0.bin"
@@ -96,11 +102,39 @@ def _fetch() -> None:
         _download.update(state="failed", error=f"Downloading the voice model failed: {e}")
 
 
+def _espeak_config():
+    """Which espeak-ng Kokoro speaks with. Its own (from espeakng-loader) is labelled for glibc 2.17 but
+    needs 2.29, so on older Linux (RHEL/CentOS/Alma/Rocky 8, Debian 10, Ubuntu 18.04) it cannot load and
+    Kokoro then asks for a system-wide espeak-ng. There the copy inside piper-phonemize, built for glibc
+    2.28, is used with its own voice data instead; no sudo needed. None: Kokoro's own choice."""
+    if os.environ.get("PHONEMIZER_ESPEAK_LIBRARY"):
+        return None  # chosen by hand
+    try:
+        import espeakng_loader
+        ctypes.CDLL(espeakng_loader.get_library_path())
+        return None
+    except (ImportError, OSError) as e:
+        reason = e
+    spec = importlib.util.find_spec("piper_phonemize")  # located, not imported
+    if not spec or not spec.origin:
+        log.warning("espeak-ng from Kokoro cannot load (%s) and piper-phonemize is not installed", reason)
+        return None
+    package = Path(spec.origin).parent
+    libraries = sorted((package.parent / "piper_phonemize.libs").glob("libespeak-ng*.so*"))
+    data = package / "espeak-ng-data"
+    if not libraries or not data.is_dir():
+        return None
+    from kokoro_onnx import EspeakConfig
+
+    log.info("Kokoro's espeak-ng cannot load here (%s); using the one from piper-phonemize", reason)
+    return EspeakConfig(lib_path=str(libraries[0]), data_path=str(data))
+
+
 @lru_cache(maxsize=1)
 def _engine():
     from kokoro_onnx import Kokoro
 
-    return Kokoro(str(MODEL_DIR / KOKORO_MODEL), str(MODEL_DIR / VOICES_FILE))
+    return Kokoro(str(MODEL_DIR / KOKORO_MODEL), str(MODEL_DIR / VOICES_FILE), espeak_config=_espeak_config())
 
 
 def _name(voice_id: str) -> str:
