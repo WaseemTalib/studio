@@ -25,7 +25,7 @@ import requests
 from PIL import Image, ImageDraw, ImageFont
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..config import FFMPEG, FFPROBE, YT_DLP
+from ..config import FFMPEG, FFPROBE, YT_DLP, yt_dlp_options
 from ..pipeline import cancel, limits, media
 from ..presets import APP_FONT_DIR
 from ..schemas import FootagePlanRequest, Scene, footage_sources
@@ -580,7 +580,7 @@ class _Downloads:
         template = self.folder / f"{safe}.yt.%(ext)s"
         seconds = min(30.0, max(2.0, clip.duration))
         try:
-            media.run([YT_DLP, "--no-warnings", "--ignore-config", "--no-plugin-dirs", "--no-playlist",
+            media.run([YT_DLP, *yt_dlp_options(), "--no-warnings", "--ignore-config", "--no-plugin-dirs", "--no-playlist",
                        "--socket-timeout", "10", "--retries", "1", "--fragment-retries", "1",
                        "--download-sections", f"*0-{seconds:.3f}", "--force-keyframes-at-cuts",
                        "--ffmpeg-location", shutil.which(FFMPEG) or FFMPEG,

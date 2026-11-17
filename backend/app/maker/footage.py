@@ -26,7 +26,8 @@ from urllib.parse import urljoin, urlparse
 
 import requests
 
-from ..config import CONTACT, COVERR_API_KEY, PEXELS_API_KEY, PIXABAY_API_KEY, SEARXNG_URL, UNSPLASH_ACCESS_KEY, YT_DLP
+from ..config import (CONTACT, COVERR_API_KEY, PEXELS_API_KEY, PIXABAY_API_KEY, SEARXNG_URL, UNSPLASH_ACCESS_KEY,
+                      YT_DLP, yt_dlp_options)
 from ..pipeline import limits, media
 
 PER_PAGE = {"pexels": 40, "pixabay": 50, "coverr": 40, "unsplash": 30}
@@ -458,7 +459,7 @@ def _duckduckgo_images(term: str) -> list[StockClip]:
 
 def _youtube(term: str) -> list[StockClip]:
     try:
-        output = media.run([YT_DLP, "--no-warnings", "--ignore-config", "--no-plugin-dirs", "--socket-timeout", "10",
+        output = media.run([YT_DLP, *yt_dlp_options(), "--no-warnings", "--ignore-config", "--no-plugin-dirs", "--socket-timeout", "10",
                             "--retries", "1", "--extractor-retries", "1", "--flat-playlist", "--dump-json",
                             f"ytsearch12:{term}"])
     except media.MediaError as e:

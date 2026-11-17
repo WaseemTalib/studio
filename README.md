@@ -47,6 +47,18 @@ Set `SHORTCUT_AUTH_PASSWORD` on any public server: on first start it creates the
 (`SHORTCUT_AUTH_USER`, default `admin`). Without it, the first visitor is asked to create the admin, so do that
 before the site is public.
 
+### YouTube on a server
+
+YouTube often blocks downloads from server IP addresses with "Sign in to confirm you're not a bot". To get past
+it, give yt-dlp cookies from a logged-in YouTube account (use a spare Google account, not your main one):
+
+1. In a private browser window, log in to YouTube, then export the cookies for youtube.com in `cookies.txt`
+   format (for example with the "Get cookies.txt LOCALLY" extension) and close that window without logging out.
+2. Upload the file to the server as `backend/data/youtube-cookies.txt` (or set `SHORTCUT_YT_COOKIES`).
+
+It is used from the next download on; no restart needed. If the error comes back, the cookies expired: export
+new ones. yt-dlp also needs a JavaScript runtime for YouTube; it uses deno if installed, otherwise node.
+
 ### Users and access
 
 Everyone logs in. Admins add users under **Settings**, pick each user's tools (Turn to Shorts, Voice Studio,

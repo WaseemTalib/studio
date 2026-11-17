@@ -117,6 +117,26 @@ FFPROBE = _tool("ffprobe", "SHORTCUT_FFPROBE")
 # older system copy; YouTube changes often break outdated versions with HTTP 403.
 _BUNDLED_YT_DLP = Path(sys.executable).with_name("yt-dlp")
 YT_DLP = os.environ.get("SHORTCUT_YT_DLP", str(_BUNDLED_YT_DLP) if _BUNDLED_YT_DLP.exists() else "yt-dlp")
+# YouTube often blocks server IP addresses ("Sign in to confirm you're not a bot"). A cookies.txt exported from a
+# browser logged in to YouTube gets past that: put it at backend/data/youtube-cookies.txt or set this path.
+YT_COOKIES = os.environ.get("SHORTCUT_YT_COOKIES", "").strip() or str(DATA_DIR / "youtube-cookies.txt")
+# JavaScript runtime yt-dlp uses for YouTube, e.g. "node" or "deno:/path/to/deno". Empty: deno if installed,
+# else node (which builds the frontend, so servers usually have it).
+YT_JS_RUNTIMES = os.environ.get("SHORTCUT_YT_JS_RUNTIMES", "").strip()
+
+
+def yt_dlp_options() -> list[str]:
+    """Options every yt-dlp call gets: the cookies file when there is one, and a JavaScript runtime."""
+    import shutil
+    options = []
+    if os.path.isfile(YT_COOKIES):
+        options += ["--cookies", YT_COOKIES]
+    runtime = YT_JS_RUNTIMES
+    if not runtime and not shutil.which("deno") and shutil.which("node"):
+        runtime = f"node:{shutil.which('node')}"
+    if runtime:
+        options += ["--js-runtimes", runtime]
+    return options
 
 # Output short side per export resolution; the long side follows the aspect ratio.
 SHORT_SIDE = {"720p": 720, "1080p": 1080, "4k": 2160}

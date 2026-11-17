@@ -1,10 +1,11 @@
 """ffmpeg/ffprobe/yt-dlp helpers."""
 
 import json
+import os
 from collections.abc import Callable
 from pathlib import Path
 
-from ..config import FFMPEG, FFPROBE, YT_DLP
+from ..config import FFMPEG, FFPROBE, YT_COOKIES, YT_DLP, yt_dlp_options
 from .cancel import run_process
 
 
@@ -68,8 +69,8 @@ def download(url: str, dest_dir: Path, on_progress: Callable[[float], None] = la
                 shown = min(fraction, 1.0)
                 on_progress(shown)
 
-    run([
-        YT_DLP, "--no-playlist", "--newline",
+    _yt_dlp([
+        "--no-playlist", "--newline",
         "--progress-template", "download:" + PROGRESS_PREFIX + "%(progress.filename)s %(progress.downloaded_bytes)s "
         "%(progress.total_bytes)s %(progress.total_bytes_estimate)s",
         "-f", "bv*[height<=1080]+ba/b[height<=1080]/b",
@@ -82,6 +83,26 @@ def download(url: str, dest_dir: Path, on_progress: Callable[[float], None] = la
     return matches[0]
 
 
+BOT_CHECK_HELP = (
+    "YouTube is blocking downloads from this server (\"Sign in to confirm you're not a bot\"). "
+    "Export cookies from a browser logged in to YouTube (cookies.txt format) and save them as {path}, "
+    "then try again. Use a spare Google account, not your main one."
+)
+
+
+def _yt_dlp(args: list[str], on_line: Callable[[str], None] | None = None) -> str:
+    """Run yt-dlp with the shared options, explaining YouTube's bot check when it blocks the server."""
+    try:
+        return run([YT_DLP, *yt_dlp_options(), *args], on_line)
+    except MediaError as e:
+        if "confirm you" in str(e) and "not a bot" in str(e):
+            if os.path.isfile(YT_COOKIES):
+                raise MediaError("YouTube still asks this server to sign in: the cookies in "
+                                 f"{YT_COOKIES} have expired or were logged out. Export fresh ones.") from e
+            raise MediaError(BOT_CHECK_HELP.format(path=YT_COOKIES)) from e
+        raise
+
+
 def _number(text: str) -> float | None:
     try:
         return float(text)
@@ -91,7 +112,7 @@ def _number(text: str) -> float | None:
 
 def source_info(url: str) -> dict:
     """Title, duration and thumbnail of a link, without downloading the video."""
-    out = run([YT_DLP, "--no-playlist", "--skip-download", "--dump-single-json", "--no-warnings", url])
+    out = _yt_dlp(["--no-playlist", "--skip-download", "--dump-single-json", "--no-warnings", url])
     data = json.loads(out)
     return {
         "title": data.get("title"),
