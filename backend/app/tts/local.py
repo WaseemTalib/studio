@@ -16,7 +16,7 @@ from pathlib import Path
 import requests
 
 from ..config import FFMPEG, KOKORO_MODEL, MODELS_DIR
-from ..pipeline.media import run
+from ..pipeline.media import MediaError, run
 from .common import TTSError
 
 log = logging.getLogger(__name__)
@@ -171,9 +171,13 @@ def synthesize(text: str, voice_id: str, speed: float) -> bytes:
         raise TTSError("The local voice model is not downloaded yet")
     import numpy as np
 
-    with _engine_lock:
-        samples, rate = _engine().create(text, voice=voice_id, speed=min(max(speed, 0.5), 2.0),
-                                         lang=LANGUAGES[voice_id[0]][0])
+    try:
+        with _engine_lock:
+            samples, rate = _engine().create(text, voice=voice_id, speed=min(max(speed, 0.5), 2.0),
+                                             lang=LANGUAGES[voice_id[0]][0])
+    except Exception as e:  # engine load (onnxruntime, espeak-ng) or synthesis failed
+        log.exception("Local voice generation failed")
+        raise TTSError(f"Local voice failed: {type(e).__name__}: {e}") from e
     with tempfile.TemporaryDirectory() as tmp:
         wav, mp3 = Path(tmp) / "speech.wav", Path(tmp) / "speech.mp3"
         with wave.open(str(wav), "wb") as w:
@@ -181,7 +185,10 @@ def synthesize(text: str, voice_id: str, speed: float) -> bytes:
             w.setsampwidth(2)
             w.setframerate(rate)
             w.writeframes((np.clip(samples, -1, 1) * 32767).astype("<i2").tobytes())
-        run([FFMPEG, "-y", "-v", "error", "-i", str(wav), "-c:a", "libmp3lame", "-b:a", "128k", str(mp3)])
+        try:
+            run([FFMPEG, "-y", "-v", "error", "-i", str(wav), "-c:a", "libmp3lame", "-b:a", "128k", str(mp3)])
+        except (OSError, MediaError) as e:  # ffmpeg missing, or built without MP3 support
+            raise TTSError(f"Converting the voice to MP3 failed: {e}") from e
         return mp3.read_bytes()
 
 
