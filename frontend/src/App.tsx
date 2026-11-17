@@ -5,6 +5,7 @@ import {
   type Permission,
 } from './auth'
 import ActiveTasks from './components/ActiveTasks'
+import Toaster from './components/Toaster'
 import ClipEditor from './pages/ClipEditor'
 import Dashboard from './pages/Dashboard'
 import Login from './pages/Login'
@@ -13,6 +14,7 @@ import Settings from './pages/Settings'
 import StickmanDirector from './pages/StickmanDirector'
 import VideoMaker from './pages/VideoMaker'
 import VoiceStudio from './pages/VoiceStudio'
+import { toast } from './toast'
 
 const TOOLS: { to: string; label: string; perm: Permission }[] = [
   { to: '/', label: 'Turn to Shorts', perm: 'shorts' },
@@ -112,7 +114,10 @@ export default function App() {
   }, [])
 
   const logout = useCallback(() => {
-    authApi.logout().catch(() => undefined).finally(() => endSession('You have been logged out.'))
+    authApi.logout().catch(() => undefined).finally(() => {
+      endSession('You have been logged out.')
+      toast('Logged out', 'info')
+    })
   }, [endSession])
 
   // The server ended the session (idle limit, logged out elsewhere, account disabled).
@@ -145,11 +150,17 @@ export default function App() {
     logout,
   }, [user, status, logout])
 
+  let page
   if (!status) {
-    return <div className="auth-screen"><p className={loadError ? 'error' : 'muted'}>{loadError ?? 'Loading…'}</p></div>
+    page = <div className="auth-screen"><p className={loadError ? 'error' : 'muted'}>{loadError ?? 'Loading…'}</p></div>
+  } else if (!ctx) {
+    page = <Login setup={status.setup_needed} notice={notice} onDone={(s) => {
+      setNotice(null)
+      setStatus(s)
+      if (s.user) toast(status.setup_needed ? `Admin account created. Welcome, ${s.user.username}!` : `Welcome back, ${s.user.username}`)
+    }} />
+  } else {
+    page = <AuthContext.Provider value={ctx}><Studio /></AuthContext.Provider>
   }
-  if (!ctx) {
-    return <Login setup={status.setup_needed} notice={notice} onDone={(s) => { setNotice(null); setStatus(s) }} />
-  }
-  return <AuthContext.Provider value={ctx}><Studio /></AuthContext.Provider>
+  return <>{page}<Toaster /></>
 }

@@ -1,4 +1,5 @@
 import { createContext, useContext } from 'react'
+import { toastSuccess } from './toast'
 
 export type Permission = 'shorts' | 'voice' | 'video_maker' | 'video_director' | 'stickman'
 export type Role = 'admin' | 'user'
@@ -69,6 +70,7 @@ async function call<T>(path: string, init?: RequestInit): Promise<T> {
     } catch { /* non-JSON error body */ }
     throw new Error(detail)
   }
+  toastSuccess(init?.method, path)
   return (res.status === 204 ? undefined : await res.json()) as T
 }
 

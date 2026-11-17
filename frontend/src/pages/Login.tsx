@@ -1,5 +1,6 @@
 import { useState, type FormEvent } from 'react'
 import { authApi, type AuthStatus } from '../auth'
+import PasswordInput from '../components/PasswordInput'
 
 /** Log in, or create the first admin account when the app has no users yet. */
 export default function Login({ setup, notice, onDone }: {
@@ -44,12 +45,12 @@ export default function Login({ setup, notice, onDone }: {
             onChange={(e) => setUsername(e.target.value)} />
         </label>
         <label className="field">Password
-          <input className="text" type="password" autoComplete={setup ? 'new-password' : 'current-password'} required
+          <PasswordInput autoComplete={setup ? 'new-password' : 'current-password'} required
             minLength={setup ? 8 : undefined} value={password} onChange={(e) => setPassword(e.target.value)} />
         </label>
         {setup && (
           <label className="field">Confirm password
-            <input className="text" type="password" autoComplete="new-password" required minLength={8} value={confirm}
+            <PasswordInput autoComplete="new-password" required minLength={8} value={confirm}
               onChange={(e) => setConfirm(e.target.value)} />
           </label>
         )}

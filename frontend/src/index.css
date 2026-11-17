@@ -809,3 +809,29 @@ button.block { width: 100%; padding: 12px 16px; font-size: 15px; }
 .activity-table tr.on { background: var(--accent-soft); }
 .activity-title { max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
 .activity-title a:hover { color: var(--accent); }
+
+/* ============ Toasts ============ */
+.toaster { position: fixed; right: 20px; bottom: 20px; z-index: 100; display: flex; flex-direction: column; gap: 10px; width: min(380px, calc(100vw - 40px)); pointer-events: none; }
+.toast { position: relative; overflow: hidden; pointer-events: auto; display: flex; align-items: center; gap: 10px; padding: 12px 12px 14px 14px; border-radius: var(--radius-sm); background: var(--panel-3); border: 1px solid var(--border-strong); box-shadow: 0 16px 40px -16px rgb(0 0 0 / 0.9); font-size: 14px; animation: toast-in 0.18s ease-out; }
+.toast-icon { display: grid; place-items: center; flex: none; width: 22px; height: 22px; border-radius: 50%; font-size: 12px; font-weight: 800; background: var(--accent-soft); color: var(--good); }
+.toast-error .toast-icon { background: rgb(248 113 113 / 0.15); color: var(--danger); }
+.toast-info .toast-icon { background: var(--panel-2); color: var(--muted); }
+.toast-message { flex: 1; min-width: 0; }
+.toast-timer { font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+.toast-close { padding: 2px 6px; border: none; background: none; color: var(--muted); font-size: 12px; }
+.toast-close:hover { background: var(--panel-2); color: var(--text); }
+.toast-bar { position: absolute; left: 0; bottom: 0; height: 3px; width: 100%; background: var(--accent); transform-origin: left; animation-name: toast-timer; animation-timing-function: linear; animation-fill-mode: forwards; }
+.toast-error .toast-bar { background: var(--danger); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+@keyframes toast-timer { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+@media (max-width: 640px) { .toaster { right: 12px; left: 12px; bottom: 12px; width: auto; } }
+
+/* ============ Password field ============ */
+.password-input { position: relative; display: flex; }
+.password-input input { flex: 1; min-width: 0; padding-right: 40px; }
+.password-eye { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); padding: 5px 7px; border: none; background: none; color: var(--muted); }
+.password-eye:hover { background: var(--panel-3); color: var(--text); }
+.password-eye:active { transform: translateY(-50%); }
+.user-reset { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.user-reset .password-input { width: 240px; }
+.pager { display: flex; align-items: center; justify-content: center; gap: 14px; flex-wrap: wrap; }

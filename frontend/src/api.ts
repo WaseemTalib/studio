@@ -1,4 +1,5 @@
 import { activityHeaders, UNAUTHENTICATED_EVENT } from './auth'
+import { toastSuccess } from './toast'
 
 export type Aspect = '9:16' | '1:1' | '16:9'
 export type ProjectStatus = 'queued' | 'processing' | 'done' | 'failed' | 'cancelled'
@@ -266,6 +267,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
   const res = await fetch(path, { ...init, headers: { ...activityHeaders(), ...init?.headers } })
   if (res.status === 401) window.dispatchEvent(new Event(UNAUTHENTICATED_EVENT))
+  if (res.ok) toastSuccess(init?.method, path)
   return res
 }
 

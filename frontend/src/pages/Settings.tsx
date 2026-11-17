@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
+import PasswordInput from '../components/PasswordInput'
 import { authApi, useAuth, type ActivityItem, type Permission, type Role, type User } from '../auth'
 
 function ChangePassword() {
@@ -13,7 +14,7 @@ function ChangePassword() {
       await authApi.changePassword(current, next)
       setCurrent('')
       setNext('')
-      setMsg({ ok: true, text: 'Password changed. Other devices were logged out.' })
+      setMsg(null)
     } catch (err) {
       setMsg({ ok: false, text: (err as Error).message })
     }
@@ -24,11 +25,11 @@ function ChangePassword() {
       <h2>Change your password</h2>
       <div className="row">
         <label className="field">Current password
-          <input className="text" type="password" autoComplete="current-password" required value={current}
+          <PasswordInput autoComplete="current-password" required value={current}
             onChange={(e) => setCurrent(e.target.value)} />
         </label>
         <label className="field">New password
-          <input className="text" type="password" autoComplete="new-password" required minLength={8} value={next}
+          <PasswordInput autoComplete="new-password" required minLength={8} value={next}
             onChange={(e) => setNext(e.target.value)} />
         </label>
         <button className="primary">Change password</button>
@@ -88,7 +89,7 @@ function AddUser({ onAdded }: { onAdded: () => void }) {
             title="Letters, numbers and _ . @ -" onChange={(e) => setUsername(e.target.value)} />
         </label>
         <label className="field">Password
-          <input className="text" type="password" autoComplete="new-password" required minLength={8} value={password}
+          <PasswordInput autoComplete="new-password" required minLength={8} value={password}
             onChange={(e) => setPassword(e.target.value)} />
         </label>
         <label className="field">Role
@@ -108,6 +109,8 @@ function AddUser({ onAdded }: { onAdded: () => void }) {
 function UserRow({ user, self, onChange }: { user: User; self: boolean; onChange: () => void }) {
   const [permissions, setPermissions] = useState(user.permissions)
   const [error, setError] = useState<string | null>(null)
+  const [resetting, setResetting] = useState(false)
+  const [newPassword, setNewPassword] = useState('')
   useEffect(() => setPermissions(user.permissions), [user.permissions])
 
   async function save(fields: Parameters<typeof authApi.updateUser>[1]) {
@@ -115,14 +118,19 @@ function UserRow({ user, self, onChange }: { user: User; self: boolean; onChange
     try {
       await authApi.updateUser(user.id, fields)
       onChange()
+      return true
     } catch (err) {
       setError((err as Error).message)
+      return false
     }
   }
 
-  async function resetPassword() {
-    const password = prompt(`New password for ${user.username} (at least 8 characters):`)
-    if (password) await save({ password })
+  async function resetPassword(e: FormEvent) {
+    e.preventDefault()
+    if (await save({ password: newPassword })) {
+      setResetting(false)
+      setNewPassword('')
+    }
   }
 
   async function remove() {
@@ -147,7 +155,7 @@ function UserRow({ user, self, onChange }: { user: User; self: boolean; onChange
           <option value="admin">Admin</option>
         </select>
         <span className="spacer" />
-        <button type="button" className="ghost" onClick={resetPassword}>Reset password</button>
+        <button type="button" className="ghost" onClick={() => setResetting((r) => !r)}>Reset password</button>
         {!self && (
           <button type="button" className="ghost" onClick={() => save({ disabled: !user.disabled })}>
             {user.disabled ? 'Enable' : 'Disable'}
@@ -155,6 +163,14 @@ function UserRow({ user, self, onChange }: { user: User; self: boolean; onChange
         )}
         {!self && <button type="button" className="ghost danger" onClick={remove}>Delete</button>}
       </div>
+      {resetting && (
+        <form className="user-reset" onSubmit={resetPassword}>
+          <PasswordInput autoComplete="new-password" required minLength={8} autoFocus value={newPassword}
+            placeholder={`New password for ${user.username}`} onChange={(e) => setNewPassword(e.target.value)} />
+          <button className="primary">Set password</button>
+          <button type="button" className="ghost" onClick={() => { setResetting(false); setNewPassword('') }}>Cancel</button>
+        </form>
+      )}
       <PermissionPicker value={permissions} onChange={setPermissions} disabled={user.role === 'admin'} />
       {changed && (
         <div className="row">
@@ -198,6 +214,7 @@ const ITEM_LINK: Record<Permission, (id: string) => string> = {
   stickman: (id) => `/stickman?plan=${id}`,
 }
 const UNKNOWN = '(before logins)'
+const PAGE_SIZE = 50
 
 /** Admins: which user created which project, in which tool. */
 function Activity() {
@@ -206,6 +223,8 @@ function Activity() {
   const [error, setError] = useState<string | null>(null)
   const [who, setWho] = useState('')
   const [tool, setTool] = useState<Permission | ''>('')
+  const [status, setStatus] = useState('')
+  const [page, setPage] = useState(0)
   useEffect(() => { authApi.activity().then(setItems, (e: Error) => setError(e.message)) }, [])
 
   const nameOf = (i: ActivityItem) => i.created_by_name ?? UNKNOWN
@@ -216,7 +235,14 @@ function Activity() {
     for (const i of items ?? []) (c[nameOf(i)] ??= {})[i.tool] = (c[nameOf(i)][i.tool] ?? 0) + 1
     return c
   }, [items])
-  const shown = (items ?? []).filter((i) => (!who || nameOf(i) === who) && (!tool || i.tool === tool))
+  const statuses = useMemo(() => [...new Set((items ?? []).map((i) => i.status))].sort(), [items])
+  const shown = (items ?? []).filter((i) =>
+    (!who || nameOf(i) === who) && (!tool || i.tool === tool) && (!status || i.status === status))
+  const pages = Math.max(1, Math.ceil(shown.length / PAGE_SIZE))
+  const current = Math.min(page, pages - 1)
+  const pageItems = shown.slice(current * PAGE_SIZE, (current + 1) * PAGE_SIZE)
+  // Any filter change starts again on the first page.
+  useEffect(() => setPage(0), [who, tool, status])
 
   return (
     <section className="panel settings-section">
@@ -259,6 +285,17 @@ function Activity() {
                 {tools.map((t) => <option key={t} value={t}>{labels[t]}</option>)}
               </select>
             </label>
+            <label className="field">Status
+              <select value={status} onChange={(e) => setStatus(e.target.value)}>
+                <option value="">Any status</option>
+                {statuses.map((st) => <option key={st} value={st}>{st}</option>)}
+              </select>
+            </label>
+            {(who || tool || status) && (
+              <button type="button" className="ghost" onClick={() => { setWho(''); setTool(''); setStatus('') }}>
+                Clear filters
+              </button>
+            )}
             <span className="muted small">{shown.length} of {items.length}</span>
           </div>
           <div className="table-wrap">
@@ -267,7 +304,7 @@ function Activity() {
                 <tr><th>Project</th><th>Tool</th><th>Created by</th><th>Status</th><th>Created</th></tr>
               </thead>
               <tbody>
-                {shown.map((i) => (
+                {pageItems.map((i) => (
                   <tr key={`${i.tool}:${i.id}`}>
                     <td className="activity-title"><Link to={ITEM_LINK[i.tool](i.id)} title={i.title}>{i.title}</Link></td>
                     <td>{labels[i.tool]}</td>
@@ -276,9 +313,21 @@ function Activity() {
                     <td>{new Date(i.created_at * 1000).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })}</td>
                   </tr>
                 ))}
+                {!pageItems.length && (
+                  <tr><td colSpan={5} className="muted">No projects match these filters.</td></tr>
+                )}
               </tbody>
             </table>
           </div>
+          {shown.length > PAGE_SIZE && (
+            <div className="pager">
+              <button type="button" disabled={current === 0} onClick={() => setPage(current - 1)}>← Previous</button>
+              <span className="muted small">
+                Page {current + 1} of {pages} · {current * PAGE_SIZE + 1}–{Math.min((current + 1) * PAGE_SIZE, shown.length)} of {shown.length}
+              </span>
+              <button type="button" disabled={current >= pages - 1} onClick={() => setPage(current + 1)}>Next →</button>
+            </div>
+          )}
         </>
       )}
       {items?.length === 0 && <p className="muted small">Nothing has been created yet.</p>}
