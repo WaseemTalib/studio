@@ -583,7 +583,6 @@ class _Downloads:
             media.run([YT_DLP, *yt_dlp_options(), "--no-warnings", "--ignore-config", "--no-plugin-dirs", "--no-playlist",
                        "--socket-timeout", "10", "--retries", "1", "--fragment-retries", "1",
                        "--download-sections", f"*0-{seconds:.3f}", "--force-keyframes-at-cuts",
-                       "--ffmpeg-location", shutil.which(FFMPEG) or FFMPEG,
                        "-f", "bv*[height<=1080][width<=1920]/b[height<=1080][width<=1920]",
                        "--merge-output-format", "mp4", "--max-filesize", "50M", "-o", str(template), clip.link])
         except media.MediaError as e:

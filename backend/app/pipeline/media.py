@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 from collections.abc import Callable
 from pathlib import Path
 
@@ -77,10 +78,15 @@ def download(url: str, dest_dir: Path, on_progress: Callable[[float], None] = la
         "--merge-output-format", "mp4",
         "-o", template, url,
     ], on_line)
-    matches = sorted(dest_dir.glob("source.*"))
-    if not matches:
-        raise MediaError("Download produced no file")
-    return matches[0]
+    # The joined file is source.<ext>; source.f137.mp4-style names are the separate video and audio parts,
+    # left behind only when the join did not happen.
+    merged = [p for p in dest_dir.glob("source.*") if re.fullmatch(r"source\.(mp4|mkv|webm|mov)", p.name)]
+    if merged:
+        return merged[0]
+    if any(dest_dir.glob("source.f*")):
+        raise MediaError("yt-dlp downloaded the video and audio separately but could not join them: ffmpeg was "
+                         f"not found ({FFMPEG}). Run ./studio.sh ffmpeg on the server, then retry.")
+    raise MediaError("Download produced no file")
 
 
 BOT_CHECK_HELP = (

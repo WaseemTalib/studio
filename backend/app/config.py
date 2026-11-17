@@ -126,9 +126,10 @@ YT_JS_RUNTIMES = os.environ.get("SHORTCUT_YT_JS_RUNTIMES", "").strip()
 
 
 def yt_dlp_options() -> list[str]:
-    """Options every yt-dlp call gets: the cookies file when there is one, and a JavaScript runtime."""
+    """Options every yt-dlp call gets: our ffmpeg (yt-dlp silently skips joining video and audio without one),
+    the cookies file when there is one, and a JavaScript runtime."""
     import shutil
-    options = []
+    options = ["--ffmpeg-location", shutil.which(FFMPEG) or FFMPEG]
     if os.path.isfile(YT_COOKIES):
         options += ["--cookies", YT_COOKIES]
     runtime = YT_JS_RUNTIMES
