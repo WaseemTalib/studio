@@ -1,4 +1,4 @@
-import { request, type LimitOption, type LimitState, type Position } from './api'
+import { apiFetch, request, type LimitOption, type LimitState, type Position } from './api'
 import type { TTSProvider, VoiceSettings } from './voiceApi'
 
 export type SourceKind = 'prompt' | 'description' | 'script' | 'news'
@@ -128,6 +128,8 @@ export interface Credit {
 
 export interface Video {
   id: string
+  /** Username of whoever created it; null for items made before logins existed. */
+  created_by_name: string | null
   title: string
   request: VideoRequest
   status: 'queued' | 'processing' | 'done' | 'failed' | 'cancelled'
@@ -209,7 +211,7 @@ export const makerApi = {
   options: () => request<MakerOptions>('/api/maker/options'),
   searxngStatus: () => request<SearxngStatus>('/api/maker/searxng'),
   draft: async (body: DraftRequest): Promise<Draft> => {
-    const res = await fetch('/api/maker/draft', json(body))
+    const res = await apiFetch('/api/maker/draft', json(body))
     if (res.status === 429) {
       const { detail } = await res.json()
       throw new DraftLimit({ mode: 'ask', stage: 'script', limit: detail.limit, options: detail.options, seconds_left: null })

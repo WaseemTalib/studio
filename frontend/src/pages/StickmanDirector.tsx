@@ -83,6 +83,7 @@ export default function StickmanDirector({ mode = 'stickman' }: { mode?: 'stickm
               <span className="muted small">
                 {styles.find((s) => s.id === p.settings.style)?.short ?? p.settings.style} · {p.settings.aspect} · {formatSeconds(p.settings.seconds)}
                 {' · '}{isWriting(p) ? 'writing…' : p.status === 'failed' ? 'failed' : p.has_package ? 'prompts ready' : p.approved ? 'approved' : 'proposal'}
+                {p.created_by_name && <>{' · '}<span className="owner">by {p.created_by_name}</span></>}
               </span>
             </button>
             {!isWriting(p) && (

@@ -63,7 +63,7 @@ def generate(provider: str, voice_id: str, voice_name: str, model_id: str, text:
               "model_id": model_id, "text": text, "settings": settings, "audio": MEDIA_PREFIX + path.name,
               "duration": _duration(path), "created_at": time.time()}
     db.add_generation(record)
-    return record
+    return db.get_generation(gid) or record
 
 
 def _duration(path: Path) -> float | None:

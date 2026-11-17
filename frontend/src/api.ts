@@ -1,3 +1,5 @@
+import { activityHeaders, UNAUTHENTICATED_EVENT } from './auth'
+
 export type Aspect = '9:16' | '1:1' | '16:9'
 export type ProjectStatus = 'queued' | 'processing' | 'done' | 'failed' | 'cancelled'
 export type Stage = 'ingest' | 'transcribe' | 'highlights' | 'render'
@@ -138,6 +140,8 @@ export function parseTime(text: string): number | null {
 
 export interface Project {
   id: string
+  /** Username of whoever created it; null for items made before logins existed. */
+  created_by_name: string | null
   title: string
   source_type: 'upload' | 'url'
   source: string
@@ -244,7 +248,7 @@ export interface ClipRender {
 }
 
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(path, init)
+  const res = await apiFetch(path, init)
   if (!res.ok) {
     let detail = res.statusText
     try {
@@ -256,6 +260,13 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(detail)
   }
   return (res.status === 204 ? undefined : await res.json()) as T
+}
+
+/** fetch for the API: marks background requests and reports an ended login session to the app. */
+export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(path, { ...init, headers: { ...activityHeaders(), ...init?.headers } })
+  if (res.status === 401) window.dispatchEvent(new Event(UNAUTHENTICATED_EVENT))
+  return res
 }
 
 export const api = {

@@ -503,6 +503,7 @@ function HistoryList({ items, current, onPlay, onDelete, onReuse }: {
                 <span className="muted small">
                   {g.voice_name} · {new Date(g.created_at * 1000).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })}
                   {g.duration ? ` · ${formatTime(g.duration)}` : ''}
+                  {g.created_by_name && <>{' · '}<span className="owner">by {g.created_by_name}</span></>}
                 </span>
               </div>
               <a className="button ghost small-btn" href={g.audio} download={`${g.voice_name} - ${g.text.slice(0, 40)}.mp3`} title="Download">⬇</a>

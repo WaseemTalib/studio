@@ -92,6 +92,8 @@ export interface Package {
 
 export interface Plan {
   id: string
+  /** Username of whoever created it; null for items made before logins existed. */
+  created_by_name: string | null
   title: string
   settings: DirectorSettings
   status: 'queued' | 'processing' | 'done' | 'failed' | 'cancelled'

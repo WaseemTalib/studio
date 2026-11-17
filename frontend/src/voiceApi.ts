@@ -68,6 +68,8 @@ export const DEFAULT_SETTINGS: VoiceSettings = { speed: 1, stability: 0.5, simil
 
 export interface Generation {
   id: string
+  /** Username of whoever created it; null for items made before logins existed. */
+  created_by_name: string | null
   provider: TTSProvider
   voice_id: string
   voice_name: string

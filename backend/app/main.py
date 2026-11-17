@@ -11,15 +11,15 @@ from pathlib import Path
 from typing import Annotated, Literal
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 
-from . import db, presets, tts
-from .config import (AUTH_PASSWORD, AUTH_USER, CORS_ORIGINS, FRONTEND_DIST, MUSIC_DIR, PROJECTS_DIR, VIDEOS_DIR,
+from . import auth, db, presets, tts
+from .config import (CORS_ORIGINS, FRONTEND_DIST, MUSIC_DIR, PROJECTS_DIR, VIDEOS_DIR,
                      VOICE_DIR)
 from .director import assemble as director_assemble, models as director_models, plan as director_plan, \
     styles as director_styles
@@ -34,6 +34,7 @@ from .schemas import (SOURCE_SPECIFIC_OPTIONS, AddLibraryVoice, ClipRender, Clip
 logging.basicConfig(level=logging.INFO)
 
 app = FastAPI(title="Shortcut Studio API")
+app.add_middleware(auth.AuthMiddleware)  # login and tool permissions; added first so CORS wraps its answers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=CORS_ORIGINS,
@@ -41,28 +42,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-if AUTH_PASSWORD:
-    import base64
-    import secrets
-
-    from starlette.middleware.base import BaseHTTPMiddleware
-
-    class _BasicAuth(BaseHTTPMiddleware):
-        """Browser login for a public server; on only when SHORTCUT_AUTH_PASSWORD is set."""
-
-        async def dispatch(self, request, call_next):
-            header = request.headers.get("authorization", "")
-            if header.lower().startswith("basic "):
-                try:
-                    user, _, password = base64.b64decode(header[6:]).decode().partition(":")
-                except (ValueError, UnicodeDecodeError):
-                    user = password = ""
-                if secrets.compare_digest(user.encode(), AUTH_USER.encode()) and \
-                        secrets.compare_digest(password.encode(), AUTH_PASSWORD.encode()):
-                    return await call_next(request)
-            return Response(status_code=401, headers={"WWW-Authenticate": 'Basic realm="Shortcut Studio"'})
-
-    app.add_middleware(_BasicAuth)
+app.include_router(auth.router)
 
 app.mount("/media", StaticFiles(directory=PROJECTS_DIR), name="media")
 app.mount("/voice-media", StaticFiles(directory=VOICE_DIR), name="voice-media")
@@ -74,6 +54,7 @@ ALLOWED_UPLOAD_SUFFIXES = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"}
 @app.on_event("startup")
 def _startup() -> None:
     db.init()
+    auth.init()
 
 
 @app.get("/api/health")
@@ -957,8 +938,9 @@ def _task_summary(kind: str, item: dict) -> dict:
 
 
 @app.get("/api/tasks")
-def tasks() -> list[dict]:
-    """Running jobs and the latest completed jobs for the persistent task display."""
+def tasks(request: Request) -> list[dict]:
+    """Running jobs and the latest completed jobs for the persistent task display, for the tools the user has."""
+    user = auth.current_user(request)
     tasks = [
         *(_task_summary("shorts", item) for item in db.list_projects()
           if item["status"] in ("queued", "processing", "done")),
@@ -969,6 +951,7 @@ def tasks() -> list[dict]:
             item,
         ) for item in db.list_plans() if item["status"] in ("queued", "processing", "done")),
     ]
+    tasks = [t for t in tasks if auth.allowed(user, auth.TASK_PERMISSION[t["kind"]])]
     running = sorted((item for item in tasks if item["status"] != "done"),
                      key=lambda item: item["created_at"], reverse=True)
     completed = sorted((item for item in tasks if item["status"] == "done"),
@@ -978,9 +961,11 @@ def tasks() -> list[dict]:
 
 @app.post("/api/tasks/{kind}/{task_id}/cancel", status_code=204)
 def cancel_active_task(
-    kind: Literal["shorts", "video-maker", "video-director", "stickman-director"], task_id: str,
+    kind: Literal["shorts", "video-maker", "video-director", "stickman-director"], task_id: str, request: Request,
 ) -> Response:
     """Cancel a task from the persistent progress display using its owning workflow."""
+    if not auth.allowed(auth.current_user(request), auth.TASK_PERMISSION[kind]):
+        raise HTTPException(403, "You do not have access to this tool")
     if kind == "shorts":
         cancel_project(task_id)
     elif kind == "video-maker":

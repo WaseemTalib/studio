@@ -6,11 +6,29 @@ import threading
 import time
 import uuid
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Iterator
 
 from .config import DB_PATH
 
 _lock = threading.Lock()
+
+# The logged-in user of the current request ({"id", "username"}), set by the auth middleware. New projects,
+# videos, plans and voice generations record it as their creator.
+current_user: ContextVar[dict | None] = ContextVar("current_user", default=None)
+OWNED_TABLES = ("projects", "videos", "director_plans", "tts_generations")
+OWNER_COLUMNS = {"created_by": "TEXT", "created_by_name": "TEXT"}
+
+
+def _owner(alias: str) -> str:
+    """SQL for the creator's current username, falling back to the name saved when the user is gone."""
+    return (f"COALESCE((SELECT username FROM users WHERE id = {alias}.created_by), {alias}.created_by_name) "
+            "AS created_by_name")
+
+
+def _creator() -> tuple[str | None, str | None]:
+    user = current_user.get()
+    return (user["id"], user["username"]) if user else (None, None)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS projects (
@@ -152,6 +170,15 @@ def init() -> None:
         for name, decl in CLIP_MIGRATIONS.items():
             if name not in clip_columns:
                 conn.execute(f"ALTER TABLE clips ADD COLUMN {name} {decl}")
+        for table in OWNED_TABLES:
+            columns = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            for name, decl in OWNER_COLUMNS.items():
+                if name not in columns:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+        # Owner names join the users table, which auth.init creates; make sure it exists for the queries.
+        conn.execute("CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, username TEXT NOT NULL UNIQUE "
+                     "COLLATE NOCASE, password TEXT NOT NULL, role TEXT NOT NULL, permissions TEXT NOT NULL "
+                     "DEFAULT '[]', disabled INTEGER NOT NULL DEFAULT 0, created_at REAL NOT NULL)")
         conn.execute("UPDATE clips SET status='failed', error='Interrupted by server restart' WHERE status='rendering'")
         # Jobs do not survive a restart; surface that instead of leaving them spinning.
         conn.execute(
@@ -193,9 +220,9 @@ def create_project(pid: str, title: str, source_type: str, source: str, options:
     now = time.time()
     with connect() as conn:
         conn.execute(
-            "INSERT INTO projects (id, title, source_type, source, options, status, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, 'queued', ?, ?)",
-            (pid, title, source_type, source, json.dumps(options), now, now),
+            "INSERT INTO projects (id, title, source_type, source, options, status, created_at, updated_at, "
+            "created_by, created_by_name) VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
+            (pid, title, source_type, source, json.dumps(options), now, now, *_creator()),
         )
 
 
@@ -218,7 +245,7 @@ def mark_cancelled(pid: str) -> None:
 
 def get_project(pid: str) -> dict[str, Any] | None:
     with connect() as conn:
-        row = conn.execute("SELECT * FROM projects WHERE id = ?", (pid,)).fetchone()
+        row = conn.execute(f"SELECT p.*, {_owner('p')} FROM projects p WHERE id = ?", (pid,)).fetchone()
         if row is None:
             return None
         project = _project(row)
@@ -231,7 +258,7 @@ def get_project(pid: str) -> dict[str, Any] | None:
 def list_projects() -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute(
-            "SELECT p.*, (SELECT COUNT(*) FROM clips c WHERE c.project_id = p.id) AS clip_count "
+            f"SELECT p.*, {_owner('p')}, (SELECT COUNT(*) FROM clips c WHERE c.project_id = p.id) AS clip_count "
             "FROM projects p ORDER BY created_at DESC"
         ).fetchall()
         return [_project(r) for r in rows]
@@ -312,21 +339,22 @@ def add_generation(g: dict[str, Any]) -> None:
     with connect() as conn:
         conn.execute(
             "INSERT INTO tts_generations (id, provider, voice_id, voice_name, model_id, text, settings, audio, "
-            "duration, created_at) VALUES (:id, :provider, :voice_id, :voice_name, :model_id, :text, :settings, "
-            ":audio, :duration, :created_at)",
-            {**g, "settings": json.dumps(g["settings"])},
+            "duration, created_at, created_by, created_by_name) VALUES (:id, :provider, :voice_id, :voice_name, "
+            ":model_id, :text, :settings, :audio, :duration, :created_at, :created_by, :created_by_name)",
+            {**g, "settings": json.dumps(g["settings"]), **dict(zip(OWNER_COLUMNS, _creator()))},
         )
 
 
 def list_generations(limit: int = 200) -> list[dict[str, Any]]:
     with connect() as conn:
-        rows = conn.execute("SELECT * FROM tts_generations ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        rows = conn.execute(f"SELECT g.*, {_owner('g')} FROM tts_generations g ORDER BY created_at DESC LIMIT ?",
+                            (limit,)).fetchall()
         return [{**dict(r), "settings": json.loads(r["settings"])} for r in rows]
 
 
 def get_generation(gid: str) -> dict[str, Any] | None:
     with connect() as conn:
-        row = conn.execute("SELECT * FROM tts_generations WHERE id = ?", (gid,)).fetchone()
+        row = conn.execute(f"SELECT g.*, {_owner('g')} FROM tts_generations g WHERE id = ?", (gid,)).fetchone()
         return {**dict(row), "settings": json.loads(row["settings"])} if row else None
 
 
@@ -348,8 +376,9 @@ def _video(row: sqlite3.Row) -> dict[str, Any]:
 def create_video(vid: str, title: str, request: dict) -> None:
     now = time.time()
     with connect() as conn:
-        conn.execute("INSERT INTO videos (id, title, request, status, created_at, updated_at) "
-                     "VALUES (?, ?, ?, 'queued', ?, ?)", (vid, title, json.dumps(request), now, now))
+        conn.execute("INSERT INTO videos (id, title, request, status, created_at, updated_at, created_by, "
+                     "created_by_name) VALUES (?, ?, ?, 'queued', ?, ?, ?, ?)",
+                     (vid, title, json.dumps(request), now, now, *_creator()))
 
 
 def update_video(vid: str, **fields: Any) -> None:
@@ -372,13 +401,14 @@ def mark_video_cancelled(vid: str) -> None:
 
 def get_video(vid: str) -> dict[str, Any] | None:
     with connect() as conn:
-        row = conn.execute("SELECT * FROM videos WHERE id = ?", (vid,)).fetchone()
+        row = conn.execute(f"SELECT v.*, {_owner('v')} FROM videos v WHERE id = ?", (vid,)).fetchone()
         return _video(row) if row else None
 
 
 def list_videos() -> list[dict[str, Any]]:
     with connect() as conn:
-        return [_video(r) for r in conn.execute("SELECT * FROM videos ORDER BY created_at DESC").fetchall()]
+        return [_video(r) for r in conn.execute(f"SELECT v.*, {_owner('v')} FROM videos v "
+                                                "ORDER BY created_at DESC").fetchall()]
 
 
 def delete_video(vid: str) -> bool:
@@ -402,8 +432,9 @@ def _plan(row: sqlite3.Row) -> dict[str, Any]:
 def create_plan(pid: str, title: str, settings: dict) -> None:
     now = time.time()
     with connect() as conn:
-        conn.execute("INSERT INTO director_plans (id, title, settings, status, step, created_at, updated_at) "
-                     "VALUES (?, ?, ?, 'queued', 'proposal', ?, ?)", (pid, title, json.dumps(settings), now, now))
+        conn.execute("INSERT INTO director_plans (id, title, settings, status, step, created_at, updated_at, "
+                     "created_by, created_by_name) VALUES (?, ?, ?, 'queued', 'proposal', ?, ?, ?, ?)",
+                     (pid, title, json.dumps(settings), now, now, *_creator()))
 
 
 def update_plan(pid: str, **fields: Any) -> None:
@@ -420,15 +451,15 @@ def update_plan(pid: str, **fields: Any) -> None:
 
 def get_plan(pid: str) -> dict[str, Any] | None:
     with connect() as conn:
-        row = conn.execute("SELECT * FROM director_plans WHERE id = ?", (pid,)).fetchone()
+        row = conn.execute(f"SELECT d.*, {_owner('d')} FROM director_plans d WHERE id = ?", (pid,)).fetchone()
         return _plan(row) if row else None
 
 
 def list_plans() -> list[dict[str, Any]]:
     with connect() as conn:
         rows = conn.execute("SELECT id, title, settings, status, step, stage, progress, error, approved, "
-                            "package IS NOT NULL AS has_package, created_at, updated_at FROM director_plans "
-                            "ORDER BY updated_at DESC").fetchall()
+                            "package IS NOT NULL AS has_package, created_at, updated_at, created_by, "
+                            f"{_owner('d')} FROM director_plans d ORDER BY updated_at DESC").fetchall()
         return [{**dict(r), "settings": json.loads(r["settings"]), "approved": bool(r["approved"]),
                  "has_package": bool(r["has_package"])} for r in rows]
 
@@ -436,3 +467,26 @@ def list_plans() -> list[dict[str, Any]]:
 def delete_plan(pid: str) -> bool:
     with connect() as conn:
         return conn.execute("DELETE FROM director_plans WHERE id = ?", (pid,)).rowcount > 0
+
+
+# --- Activity: who created what, across tools -----------------------------------------------------------
+
+
+def activity() -> list[dict[str, Any]]:
+    """Every project, video, plan and voice generation with its tool and creator, newest first."""
+    with connect() as conn:
+        rows = [
+            *({**dict(r), "tool": "shorts"} for r in conn.execute(
+                f"SELECT p.id, p.title, p.status, p.created_at, p.created_by, {_owner('p')} FROM projects p")),
+            *({**dict(r), "tool": "video_maker"} for r in conn.execute(
+                f"SELECT v.id, v.title, v.status, v.created_at, v.created_by, {_owner('v')} FROM videos v")),
+            *({**{k: r[k] for k in r.keys() if k != "settings"},
+               "tool": "video_director" if json.loads(r["settings"]).get("mode", "stickman") == "generic"
+               else "stickman"} for r in conn.execute(
+                f"SELECT d.id, d.title, d.status, d.created_at, d.created_by, d.settings, {_owner('d')} "
+                "FROM director_plans d")),
+            *({**dict(r), "tool": "voice", "status": "done"} for r in conn.execute(
+                f"SELECT g.id, substr(g.text, 1, 120) AS title, g.created_at, g.created_by, {_owner('g')} "
+                "FROM tts_generations g")),
+        ]
+    return sorted(rows, key=lambda r: r["created_at"], reverse=True)

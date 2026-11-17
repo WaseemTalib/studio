@@ -703,6 +703,7 @@ function VideoCard({ video, onUpdate, onRemoved, onReuse, onError }: {
         <span className="muted small">
           {video.request.scenes.length} scenes · {video.request.aspect}
           {video.duration ? ` · ${formatTime(video.duration)}` : ''} · {new Date(video.created_at * 1000).toLocaleString()}
+          {video.created_by_name && <>{' · '}<span className="owner">by {video.created_by_name}</span></>}
         </span>
         {working && (
           <span className="progress-wrap">

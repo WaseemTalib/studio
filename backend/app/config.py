@@ -25,9 +25,12 @@ CORS_ORIGINS = ["http://localhost:5173", "http://127.0.0.1:5173",
                 *(o.strip().rstrip("/") for o in os.environ.get("SHORTCUT_CORS_ORIGINS", "").split(",") if o.strip())]
 # Built frontend (`npm run build`). When it exists the backend serves it, so one process runs the whole app.
 FRONTEND_DIST = Path(os.environ.get("SHORTCUT_FRONTEND_DIST", BACKEND_DIR.parent / "frontend" / "dist")).resolve()
-# Optional login for a public server: when set, every request needs this username and password.
+# Login. Users are managed in Settings; on first start with no users, these create the first admin
+# (otherwise the first visitor is asked to create one).
 AUTH_USER = os.environ.get("SHORTCUT_AUTH_USER", "admin")
 AUTH_PASSWORD = os.environ.get("SHORTCUT_AUTH_PASSWORD", "")
+# Hours without activity before a login session ends.
+SESSION_IDLE_HOURS = float(os.environ.get("SHORTCUT_SESSION_IDLE_HOURS", "24"))
 
 # Claude and DeepSeek through AgentRouter (agentrouter.org), OpenAI-compatible. Requests identify as Shortcut
 # Studio; AGENTROUTER_HEADERS (JSON) adds any client headers AgentRouter asked you to send.

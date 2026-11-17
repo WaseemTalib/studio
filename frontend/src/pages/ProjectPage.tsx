@@ -50,6 +50,7 @@ export default function ProjectPage() {
           <div className="meta-chips">
             <span>{project.source_type === 'url' ? new URL(project.source).hostname.replace('www.', '') : 'Upload'}</span>
             {project.duration != null && <span>{formatTime(project.duration)}</span>}
+            {project.created_by_name && <span className="owner">by {project.created_by_name}</span>}
             <span>{o.aspect}</span>
             {o.mode === 'full' ? <span>Full video</span> : <span>{o.min_seconds}–{o.max_seconds}s clips</span>}
             {o.topics?.length ? <span>Topics: {o.topics.join(', ')}</span> : null}

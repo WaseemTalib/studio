@@ -43,7 +43,17 @@ cp backend/.env.example backend/.env   # add keys, plus SHORTCUT_PORT (a free po
 Point the domain at it with a reverse proxy to `http://127.0.0.1:<SHORTCUT_PORT>` (for Apache, in the site's
 `.htaccess`: `RewriteEngine On` and `RewriteRule ^(.*)$ http://127.0.0.1:8000/$1 [P,L]`). Add
 `* * * * * /path/to/studio.sh start >/dev/null 2>&1` to the crontab to bring it back after a crash or reboot.
-Set `SHORTCUT_AUTH_PASSWORD` on any public server: the app has no other login and uses your API keys.
+Set `SHORTCUT_AUTH_PASSWORD` on any public server: on first start it creates the admin account
+(`SHORTCUT_AUTH_USER`, default `admin`). Without it, the first visitor is asked to create the admin, so do that
+before the site is public.
+
+### Users and access
+
+Everyone logs in. Admins add users under **Settings**, pick each user's tools (Turn to Shorts, Voice Studio,
+Video Maker, Video Director, Stickman Director), reset passwords, disable or delete accounts. Admins can use every
+tool. Users who are not admins only see their own tools, and the API refuses the others. **Log out** is in the
+top bar. A session ends after 24 hours without activity (`SHORTCUT_SESSION_IDLE_HOURS`); a tab left open but
+unused does not keep it alive. Projects are shared: everyone with access to a tool sees all of its work.
 
 With `GROQ_API_KEY` set, both transcription (hosted Whisper) and highlight picking run on Groq.
 Without it, transcription runs locally with faster-whisper (first run downloads the `small` model,

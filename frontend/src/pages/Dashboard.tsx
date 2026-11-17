@@ -68,6 +68,7 @@ export default function Dashboard() {
                 <span className="muted small">
                   {new Date(p.created_at * 1000).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
                   {' · '}{p.options.mode === 'full' ? 'Full video' : `${p.options.aspect} clips`}
+                  {p.created_by_name && <>{' · '}<span className="owner">by {p.created_by_name}</span></>}
                 </span>
                 <div className="card-meta">
                   <ProjectStatus project={p} />
