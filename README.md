@@ -6,29 +6,110 @@ Pipeline: **import** (upload or link via yt-dlp) → **transcribe** (faster-whis
 **pick highlights** (Groq or another free LLM platform, structured output) → **render** (ffmpeg cut + reframe to 9:16 / 1:1 / 16:9,
 burned-in captions) → clip library with virality score, hook, reasoning, hashtags, and download.
 
-## Requirements
+## Set up on a new machine
 
-- Python 3.10+
-- Node 20+
-- `ffmpeg`, `ffprobe` and `yt-dlp` on `PATH`
-- A free Groq API key (`GROQ_API_KEY`, from console.groq.com)
+### 1. Install the tools
 
-## Run
+| Tool | Version | macOS (Homebrew) | Ubuntu / Debian | Windows |
+|---|---|---|---|---|
+| Git | any | `brew install git` | `sudo apt install git` | [git-scm.com](https://git-scm.com) |
+| Python | 3.11 or newer (3.10 works, but yt-dlp is dropping it) | `brew install python@3.12` | `sudo apt install python3 python3-venv` | [python.org](https://www.python.org/downloads/) (tick "Add to PATH") |
+| Node.js | 20 or newer | `brew install node` | [nodejs.org](https://nodejs.org) or `nvm` | [nodejs.org](https://nodejs.org) |
+| ffmpeg + ffprobe | any recent | `brew install ffmpeg` | `sudo apt install ffmpeg` | `winget install Gyan.FFmpeg` |
+
+yt-dlp is installed with the backend's Python packages; you do not install it separately. Check the tools with:
 
 ```sh
-# Backend (http://127.0.0.1:8000)
-cd backend
-python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
-cp .env.example .env                 # then add GROQ_API_KEY to .env
-.venv/bin/uvicorn app.main:app --reload --timeout-graceful-shutdown 3
+git --version && python3 --version && node --version && ffmpeg -version | head -1
+```
 
-# Frontend (http://localhost:5173), in another terminal
+### 2. Get the code
+
+```sh
+git clone https://github.com/WaseemTalib/studio.git
+cd studio
+```
+
+### 3. Backend (http://127.0.0.1:8000)
+
+```sh
+cd backend
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
+cp .env.example .env
+```
+
+Open `backend/.env` and add at least one AI key. The free `GROQ_API_KEY` (console.groq.com) is enough for
+transcription and highlights; every other key is optional (see [Configuration](#configuration-environment)).
+Then start it:
+
+```sh
+.venv/bin/uvicorn app.main:app --reload --timeout-graceful-shutdown 3
+```
+
+Leave this terminal open.
+
+On **Windows** (PowerShell), the venv's programs are in `.venv\Scripts`:
+
+```powershell
+cd backend
+py -m venv .venv
+.venv\Scripts\pip install -r requirements.txt
+copy .env.example .env
+.venv\Scripts\uvicorn app.main:app --reload --timeout-graceful-shutdown 3
+```
+
+### 4. Frontend (http://localhost:5173), in a second terminal
+
+```sh
 cd frontend
 npm install
 npm run dev
 ```
 
-### Live server
+### 5. Open the app and create the admin
+
+Go to **http://localhost:5173**. On a fresh machine there are no users yet, so the first page asks you to create the
+admin account. You can also set `SHORTCUT_AUTH_USER` and `SHORTCUT_AUTH_PASSWORD` in `backend/.env` before the
+first start; then that account is created and you just log in. Add more users under **Settings**.
+
+### Bring your data from another machine (optional)
+
+Users, projects, clips, voices, videos and downloaded models all live in `backend/data/`, and keys in
+`backend/.env`. Neither is in git. To move everything, stop the backend on both machines and copy those two over:
+
+```sh
+# on the old machine, from the studio folder
+tar czf studio-data.tgz backend/data backend/.env
+# copy studio-data.tgz to the new machine, then in its studio folder:
+tar xzf studio-data.tgz
+```
+
+Skip `backend/data/` to start fresh. To keep users and projects but not the large media, copy just
+`backend/data/studio.db` (projects whose media is missing will show without videos).
+
+### Updating
+
+```sh
+git pull
+backend/.venv/bin/pip install -r backend/requirements.txt
+(cd frontend && npm install)
+```
+
+Then restart the backend. On a server, `./studio.sh update` does all of this.
+
+### Common problems
+
+| Problem | Fix |
+|---|---|
+| `ffmpeg not found` | Install ffmpeg (step 1), or set `SHORTCUT_FFMPEG` / `SHORTCUT_FFPROBE` in `backend/.env` to its full path |
+| `pip install` fails building a package | Use Python 3.11 or 3.12; very new Python versions sometimes lack ready-made packages |
+| Frontend shows "Failed to fetch" or a blank page | The backend is not running, or runs on another port; Vite expects `http://127.0.0.1:8000` (override with `SHORTCUT_API` in `frontend/.env`) |
+| Port 8000 or 5173 already in use | Stop the other program, or start uvicorn with `--port 8001` and set `SHORTCUT_API=http://127.0.0.1:8001` in `frontend/.env` |
+| Forgot the admin password | Stop the backend, run `backend/.venv/bin/python -c "import sqlite3; c = sqlite3.connect('backend/data/studio.db'); c.execute('DELETE FROM sessions'); c.execute('DELETE FROM users'); c.commit()"` from the studio folder, then start it and create the admin again. Projects are kept |
+| YouTube: "Sign in to confirm you're not a bot" | Happens on servers, not home connections; see [YouTube on a server](#youtube-on-a-server) |
+
+## Live server
 
 On a server one process runs everything: after `npm run build` the backend also serves the frontend.
 
@@ -49,17 +130,28 @@ before the site is public.
 
 ### YouTube on a server
 
-YouTube often blocks downloads from server IP addresses with "Sign in to confirm you're not a bot". To get past
-it, give yt-dlp cookies from a logged-in YouTube account (use a spare Google account, not your main one):
+On your own computer YouTube links just work. On a server they often fail with "Sign in to confirm you're not a
+bot": YouTube distrusts data-centre IP addresses, whatever the code does. Give yt-dlp cookies from a logged-in
+YouTube account (a spare Google account, not your main one):
 
-1. In a private browser window, log in to YouTube, then export the cookies for youtube.com in `cookies.txt`
-   format (for example with the "Get cookies.txt LOCALLY" extension) and close that window without logging out.
-2. Upload the file to the server as `backend/data/youtube-cookies.txt` (or set `SHORTCUT_YT_COOKIES`).
+1. Close all private windows, open a new private/incognito window and log in to youtube.com.
+2. In the same tab open `https://www.youtube.com/robots.txt`, then export the cookies in Netscape `cookies.txt`
+   format (for example with the "Get cookies.txt LOCALLY" extension, allowed in private windows).
+3. Close the private window straight away, without logging out (logging out cancels the cookies).
+4. Upload the file to the server as `backend/data/youtube-cookies.txt` (or set `SHORTCUT_YT_COOKIES`). It is
+   used from the next download; no restart needed, and git ignores it.
 
-It is used from the next download on; no restart needed. If the error comes back, the cookies expired: export
-new ones. yt-dlp also needs a JavaScript runtime for YouTube; it uses deno if installed, otherwise node.
+Check it on the server with:
 
-### Users and access
+```sh
+backend/.venv/bin/yt-dlp --cookies backend/data/youtube-cookies.txt --skip-download --print title "https://youtu.be/jNQXAC9IVRw"
+```
+
+YouTube cancels exported sessions now and then; when the error returns, export again. If even fresh cookies fail,
+YouTube is blocking the server's address: upload the video file instead of pasting the link. yt-dlp also needs a
+JavaScript runtime for YouTube; it uses deno if installed, otherwise node.
+
+## Users and access
 
 Everyone logs in. Admins add users under **Settings**, pick each user's tools (Turn to Shorts, Voice Studio,
 Video Maker, Video Director, Stickman Director), reset passwords, disable or delete accounts. Admins can use every
@@ -248,6 +340,11 @@ export them in your shell, which takes precedence. Restart the backend after cha
 | `SHORTCUT_WHISPER_DEVICE` | `auto` | `cpu`, `cuda`, or `auto` |
 | `SHORTCUT_WHISPER_COMPUTE` | `int8` | faster-whisper compute type |
 | `SHORTCUT_FFMPEG` / `SHORTCUT_FFPROBE` | on `PATH` | Tool paths; when missing, `./studio.sh update` downloads a standalone Linux build into `backend/data/bin`, which the app also checks |
+| `SHORTCUT_AUTH_USER` / `SHORTCUT_AUTH_PASSWORD` | `admin` / unset | First admin, created on start when there are no users yet |
+| `SHORTCUT_SESSION_IDLE_HOURS` | `24` | Hours without activity before a login ends |
+| `SHORTCUT_HOST` / `SHORTCUT_PORT` | `127.0.0.1` / `8000` | Where `python -m app` and `./studio.sh` listen |
+| `SHORTCUT_YT_COOKIES` | `backend/data/youtube-cookies.txt` | YouTube cookies for servers YouTube blocks (used when the file exists) |
+| `SHORTCUT_YT_JS_RUNTIMES` | deno if installed, else node | JavaScript runtime yt-dlp uses for YouTube |
 | `SHORTCUT_YT_DLP` | the venv's `yt-dlp` | Downloader; upgrade with `.venv/bin/pip install -U "yt-dlp[default]"` if YouTube returns 403 |
 
 The live research and candidate-search workflow is adapted from the MIT-licensed
